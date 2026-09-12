@@ -25,22 +25,9 @@ $app = Application::configure(basePath: dirname(__DIR__))
         //
     })->create();
 
-if (isset($_ENV['APP_STORAGE_PATH']) || getenv('APP_STORAGE_PATH')) {
-    $storagePath = getenv('APP_STORAGE_PATH') ?: $_ENV['APP_STORAGE_PATH'];
+if (isset($_ENV['APP_STORAGE_PATH']) || getenv('APP_STORAGE_PATH') || isset($_ENV['LARAVEL_STORAGE_PATH']) || getenv('LARAVEL_STORAGE_PATH')) {
+    $storagePath = getenv('LARAVEL_STORAGE_PATH') ?: ($_ENV['LARAVEL_STORAGE_PATH'] ?? (getenv('APP_STORAGE_PATH') ?: $_ENV['APP_STORAGE_PATH']));
     $app->useStoragePath($storagePath);
-}
-
-if (isset($_ENV['APP_BOOTSTRAP_PATH']) || getenv('APP_BOOTSTRAP_PATH')) {
-    $bootstrapPath = getenv('APP_BOOTSTRAP_PATH') ?: $_ENV['APP_BOOTSTRAP_PATH'];
-    if (method_exists($app, 'useBootstrapPath')) {
-        $app->useBootstrapPath($bootstrapPath);
-    }
-} elseif (isset($_ENV['APP_BOOTSTRAP_CACHE_PATH']) || getenv('APP_BOOTSTRAP_CACHE_PATH')) {
-    $bootstrapCachePath = getenv('APP_BOOTSTRAP_CACHE_PATH') ?: $_ENV['APP_BOOTSTRAP_CACHE_PATH'];
-    $bootstrapPath = dirname($bootstrapCachePath);
-    if (method_exists($app, 'useBootstrapPath')) {
-        $app->useBootstrapPath($bootstrapPath);
-    }
 }
 
 return $app;

@@ -2,6 +2,8 @@
 
 // Vercel Serverless Function Bridge for Laravel Application
 $tmpStorage = '/tmp/storage';
+$tmpBootstrapCache = '/tmp/bootstrap/cache';
+
 $dirs = [
     $tmpStorage,
     $tmpStorage . '/framework',
@@ -13,7 +15,7 @@ $dirs = [
     $tmpStorage . '/app',
     $tmpStorage . '/app/public',
     '/tmp/bootstrap',
-    '/tmp/bootstrap/cache',
+    $tmpBootstrapCache,
 ];
 
 foreach ($dirs as $dir) {
@@ -22,6 +24,7 @@ foreach ($dirs as $dir) {
     }
 }
 
+// Storage paths
 putenv('APP_STORAGE_PATH=' . $tmpStorage);
 $_ENV['APP_STORAGE_PATH'] = $tmpStorage;
 $_SERVER['APP_STORAGE_PATH'] = $tmpStorage;
@@ -34,12 +37,25 @@ putenv('VIEW_COMPILED_PATH=' . $tmpStorage . '/framework/views');
 $_ENV['VIEW_COMPILED_PATH'] = $tmpStorage . '/framework/views';
 $_SERVER['VIEW_COMPILED_PATH'] = $tmpStorage . '/framework/views';
 
-putenv('APP_BOOTSTRAP_PATH=/tmp/bootstrap');
-$_ENV['APP_BOOTSTRAP_PATH'] = '/tmp/bootstrap';
-$_SERVER['APP_BOOTSTRAP_PATH'] = '/tmp/bootstrap';
+// Cache file paths (pointing directly to writable /tmp/bootstrap/cache/)
+putenv('APP_SERVICES_CACHE=' . $tmpBootstrapCache . '/services.php');
+$_ENV['APP_SERVICES_CACHE'] = $tmpBootstrapCache . '/services.php';
+$_SERVER['APP_SERVICES_CACHE'] = $tmpBootstrapCache . '/services.php';
 
-putenv('APP_BOOTSTRAP_CACHE_PATH=/tmp/bootstrap/cache');
-$_ENV['APP_BOOTSTRAP_CACHE_PATH'] = '/tmp/bootstrap/cache';
-$_SERVER['APP_BOOTSTRAP_CACHE_PATH'] = '/tmp/bootstrap/cache';
+putenv('APP_PACKAGES_CACHE=' . $tmpBootstrapCache . '/packages.php');
+$_ENV['APP_PACKAGES_CACHE'] = $tmpBootstrapCache . '/packages.php';
+$_SERVER['APP_PACKAGES_CACHE'] = $tmpBootstrapCache . '/packages.php';
+
+putenv('APP_CONFIG_CACHE=' . $tmpBootstrapCache . '/config.php');
+$_ENV['APP_CONFIG_CACHE'] = $tmpBootstrapCache . '/config.php';
+$_SERVER['APP_CONFIG_CACHE'] = $tmpBootstrapCache . '/config.php';
+
+putenv('APP_ROUTES_CACHE=' . $tmpBootstrapCache . '/routes.php');
+$_ENV['APP_ROUTES_CACHE'] = $tmpBootstrapCache . '/routes.php';
+$_SERVER['APP_ROUTES_CACHE'] = $tmpBootstrapCache . '/routes.php';
+
+putenv('APP_EVENTS_CACHE=' . $tmpBootstrapCache . '/events.php');
+$_ENV['APP_EVENTS_CACHE'] = $tmpBootstrapCache . '/events.php';
+$_SERVER['APP_EVENTS_CACHE'] = $tmpBootstrapCache . '/events.php';
 
 require __DIR__ . '/../laravel/public/index.php';
