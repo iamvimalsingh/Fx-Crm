@@ -23,7 +23,9 @@ $app = Application::configure(basePath: dirname(__DIR__))
     })
     ->withExceptions(function (Exceptions $exceptions) {
         //
-    })->create();
+    })
+    ->withProviders()
+    ->create();
 
 if (isset($_ENV['APP_STORAGE_PATH']) || getenv('APP_STORAGE_PATH') || isset($_ENV['LARAVEL_STORAGE_PATH']) || getenv('LARAVEL_STORAGE_PATH')) {
     $storagePath = getenv('LARAVEL_STORAGE_PATH') ?: ($_ENV['LARAVEL_STORAGE_PATH'] ?? (getenv('APP_STORAGE_PATH') ?: $_ENV['APP_STORAGE_PATH']));
