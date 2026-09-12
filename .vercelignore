@@ -1,0 +1,12 @@
+node_modules
+dist
+.git
+.env*
+!.env.example
+laravel/vendor
+vendor
+laravel/storage/framework/cache/data/*
+laravel/storage/framework/sessions/*
+laravel/storage/framework/views/*
+laravel/storage/logs/*
+laravel/bootstrap/cache/*.php

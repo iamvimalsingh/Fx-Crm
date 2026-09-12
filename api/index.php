@@ -30,4 +30,8 @@ putenv('VIEW_COMPILED_PATH=' . $tmpStorage . '/framework/views');
 $_ENV['VIEW_COMPILED_PATH'] = $tmpStorage . '/framework/views';
 $_SERVER['VIEW_COMPILED_PATH'] = $tmpStorage . '/framework/views';
 
+putenv('APP_BOOTSTRAP_CACHE_PATH=/tmp/bootstrap/cache');
+$_ENV['APP_BOOTSTRAP_CACHE_PATH'] = '/tmp/bootstrap/cache';
+$_SERVER['APP_BOOTSTRAP_CACHE_PATH'] = '/tmp/bootstrap/cache';
+
 require __DIR__ . '/../laravel/public/index.php';

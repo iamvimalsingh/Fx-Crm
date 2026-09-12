@@ -30,4 +30,11 @@ if (isset($_ENV['APP_STORAGE_PATH']) || getenv('APP_STORAGE_PATH')) {
     $app->useStoragePath($storagePath);
 }
 
+if (isset($_ENV['APP_BOOTSTRAP_CACHE_PATH']) || getenv('APP_BOOTSTRAP_CACHE_PATH')) {
+    $bootstrapCachePath = getenv('APP_BOOTSTRAP_CACHE_PATH') ?: $_ENV['APP_BOOTSTRAP_CACHE_PATH'];
+    if (method_exists($app, 'useBootstrapCachePath')) {
+        $app->useBootstrapCachePath($bootstrapCachePath);
+    }
+}
+
 return $app;
