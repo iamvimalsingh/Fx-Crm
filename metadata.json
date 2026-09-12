@@ -1,0 +1,6 @@
+{
+  "name": "Forex Broker Client CRM",
+  "description": "Production Forex Broker Client CRM with manual V1 Admin Operations Terminal, multi-platform trading accounts, high-precision BCMath wallet ledger, and audit tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
