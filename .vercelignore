@@ -1,5 +1,12 @@
 node_modules
 dist
+src
+index.html
+metadata.json
+vite.config.*
+package-lock.json
+bun.lock
+tsconfig*.json
 .git
 .env*
 !.env.example
