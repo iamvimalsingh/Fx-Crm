@@ -26,9 +26,17 @@ putenv('APP_STORAGE_PATH=' . $tmpStorage);
 $_ENV['APP_STORAGE_PATH'] = $tmpStorage;
 $_SERVER['APP_STORAGE_PATH'] = $tmpStorage;
 
+putenv('LARAVEL_STORAGE_PATH=' . $tmpStorage);
+$_ENV['LARAVEL_STORAGE_PATH'] = $tmpStorage;
+$_SERVER['LARAVEL_STORAGE_PATH'] = $tmpStorage;
+
 putenv('VIEW_COMPILED_PATH=' . $tmpStorage . '/framework/views');
 $_ENV['VIEW_COMPILED_PATH'] = $tmpStorage . '/framework/views';
 $_SERVER['VIEW_COMPILED_PATH'] = $tmpStorage . '/framework/views';
+
+putenv('APP_BOOTSTRAP_PATH=/tmp/bootstrap');
+$_ENV['APP_BOOTSTRAP_PATH'] = '/tmp/bootstrap';
+$_SERVER['APP_BOOTSTRAP_PATH'] = '/tmp/bootstrap';
 
 putenv('APP_BOOTSTRAP_CACHE_PATH=/tmp/bootstrap/cache');
 $_ENV['APP_BOOTSTRAP_CACHE_PATH'] = '/tmp/bootstrap/cache';
