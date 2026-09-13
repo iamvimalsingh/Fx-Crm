@@ -84,4 +84,16 @@ class ViewResolutionTest extends TestCase
 
         $response->assertStatus(200);
     }
+
+    /**
+     * Test that session, cache, log, and filesystem drivers are configured and resolve cleanly.
+     */
+    public function test_vercel_runtime_drivers_resolve(): void
+    {
+        $this->assertNotNull(config('session.driver'));
+        $this->assertNotNull(config('cache.default'));
+        $this->assertNotNull(config('logging.default'));
+        $this->assertNotNull(config('filesystems.default'));
+        $this->assertArrayHasKey('s3', config('filesystems.disks'));
+    }
 }

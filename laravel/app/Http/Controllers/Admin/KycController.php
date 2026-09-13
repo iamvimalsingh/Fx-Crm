@@ -13,7 +13,7 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\View\View;
-use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Symfony\Component\HttpFoundation\Response;
 
 class KycController extends Controller
 {
@@ -185,12 +185,14 @@ class KycController extends Controller
     /**
      * Securely stream/view an uploaded document for administrators.
      */
-    public function viewDocument(KycDocument $document): BinaryFileResponse
+    public function viewDocument(KycDocument $document): Response
     {
-        if (!Storage::disk('local')->exists($document->file_path)) {
+        $disk = config('filesystems.default');
+
+        if (!Storage::disk($disk)->exists($document->file_path)) {
             abort(404, 'Document file not found.');
         }
 
-        return response()->file(Storage::disk('local')->path($document->file_path));
+        return Storage::disk($disk)->response($document->file_path);
     }
 }

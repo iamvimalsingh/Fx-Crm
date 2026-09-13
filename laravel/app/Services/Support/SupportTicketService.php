@@ -408,14 +408,14 @@ class SupportTicketService
         User $user,
         UploadedFile $file
     ): SupportAttachment {
-        // Save to local private storage: storage/app/support_attachments/
-        $storedPath = $file->store('support_attachments', 'local');
+        $disk = config('filesystems.default');
+        $storedPath = $file->store('support_attachments', $disk);
 
         return SupportAttachment::create([
             'ticket_id' => $ticket->id,
             'message_id' => $message->id,
             'user_id' => $user->id,
-            'disk' => 'local',
+            'disk' => $disk,
             'file_path' => $storedPath,
             'file_name' => $file->getClientOriginalName(),
             'mime_type' => $file->getClientMimeType() ?? 'application/octet-stream',

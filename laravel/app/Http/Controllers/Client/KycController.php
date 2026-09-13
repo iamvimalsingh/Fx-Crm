@@ -12,7 +12,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
-use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Symfony\Component\HttpFoundation\Response;
 
 class KycController extends Controller
 {
@@ -39,8 +39,9 @@ class KycController extends Controller
 
         $file = $request->file('document_file');
         
-        // Store safely in private storage outside public web root
-        $path = $file->store('kyc_documents', 'local');
+        // Store safely in configured filesystem disk (local in dev, s3 in production)
+        $disk = config('filesystems.default');
+        $path = $file->store('kyc_documents', $disk);
 
         // Delete previous document file of same type if pending or rejected
         $existingDoc = KycDocument::where('user_id', $user->id)
@@ -48,8 +49,8 @@ class KycController extends Controller
             ->first();
 
         if ($existingDoc) {
-            if (Storage::disk('local')->exists($existingDoc->file_path)) {
-                Storage::disk('local')->delete($existingDoc->file_path);
+            if (Storage::disk($disk)->exists($existingDoc->file_path)) {
+                Storage::disk($disk)->delete($existingDoc->file_path);
             }
             $existingDoc->update([
                 'file_path' => $path,
@@ -128,7 +129,7 @@ class KycController extends Controller
     /**
      * Securely stream/view an uploaded KYC document for the owning client.
      */
-    public function viewDocument(KycDocument $document): BinaryFileResponse
+    public function viewDocument(KycDocument $document): Response
     {
         /** @var \App\Models\User $user */
         $user = Auth::user();
@@ -138,10 +139,12 @@ class KycController extends Controller
             abort(403, 'Unauthorized access to document.');
         }
 
-        if (!Storage::disk('local')->exists($document->file_path)) {
+        $disk = config('filesystems.default');
+
+        if (!Storage::disk($disk)->exists($document->file_path)) {
             abort(404, 'Document file not found.');
         }
 
-        return response()->file(Storage::disk('local')->path($document->file_path));
+        return Storage::disk($disk)->response($document->file_path);
     }
 }

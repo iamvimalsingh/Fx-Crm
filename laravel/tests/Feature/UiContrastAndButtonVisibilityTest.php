@@ -212,4 +212,38 @@ class UiContrastAndButtonVisibilityTest extends TestCase
         $response->assertSee('admin.login');
         $response->assertSee('badge bg-info bg-opacity-20 text-info', false);
     }
+
+    public function test_all_auth_views_render_with_high_contrast_theme_and_accessible_elements(): void
+    {
+        // 1. Client Login
+        $loginRes = $this->get(route('login'));
+        $loginRes->assertStatus(200);
+        $loginRes->assertSee('data-bs-theme="dark"', false);
+        $loginRes->assertSee('--auth-bg: #0b0e14;', false);
+
+        // 2. Client Register
+        $regRes = $this->get(route('register'));
+        $regRes->assertStatus(200);
+        $regRes->assertSee('data-bs-theme="dark"', false);
+        $regRes->assertSee('--auth-bg: #0b0e14;', false);
+        $regRes->assertSee('Open a Real Trading Account &amp; Wallet', false);
+
+        // 3. Forgot Password
+        $forgotRes = $this->get(route('password.request'));
+        $forgotRes->assertStatus(200);
+        $forgotRes->assertSee('data-bs-theme="dark"', false);
+        $forgotRes->assertSee('--auth-bg: #0b0e14;', false);
+
+        // 4. Reset Password
+        $resetRes = $this->get(route('password.reset', ['token' => 'test-token', 'email' => 'trader@example.com']));
+        $resetRes->assertStatus(200);
+        $resetRes->assertSee('data-bs-theme="dark"', false);
+        $resetRes->assertSee('--auth-bg: #0b0e14;', false);
+
+        // 5. Admin Login
+        $adminLoginRes = $this->get(route('admin.login'));
+        $adminLoginRes->assertStatus(200);
+        $adminLoginRes->assertSee('data-bs-theme="dark"', false);
+        $adminLoginRes->assertSee('--admin-bg: #040d21;', false);
+    }
 }
