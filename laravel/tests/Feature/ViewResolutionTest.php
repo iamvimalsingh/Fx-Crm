@@ -94,4 +94,28 @@ class ViewResolutionTest extends TestCase
 
         $this->assertEquals(404, $response->getStatusCode());
     }
+
+    /**
+     * Test that temporary neon-init route bypasses session middleware and returns 403 when secret is configured but header is invalid.
+     */
+    public function test_neon_init_bypasses_session_middleware_and_validates_secret(): void
+    {
+        putenv('NEON_INIT_SECRET=test_super_secret_key_12345');
+        $_ENV['NEON_INIT_SECRET'] = 'test_super_secret_key_12345';
+
+        // Request with invalid secret header
+        $response = $this->postJson('/neon-init', [], [
+            'X-Neon-Init-Secret' => 'invalid_secret',
+        ]);
+
+        $response->assertStatus(403);
+        $response->assertJson([
+            'status' => 'error',
+            'message' => 'Unauthorized.',
+        ]);
+
+        // Clean up environment
+        putenv('NEON_INIT_SECRET');
+        unset($_ENV['NEON_INIT_SECRET']);
+    }
 }

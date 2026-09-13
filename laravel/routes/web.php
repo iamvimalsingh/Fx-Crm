@@ -20,7 +20,12 @@ use Illuminate\Support\Facades\Route;
 */
 
 // Temporary one-time database initializer (protected by NEON_INIT_SECRET header)
-Route::post('/neon-init', NeonInitController::class)->name('neon.init');
+Route::post('/neon-init', NeonInitController::class)
+    ->withoutMiddleware([
+        \Illuminate\Session\Middleware\StartSession::class,
+        \Illuminate\View\Middleware\ShareErrorsFromSession::class,
+    ])
+    ->name('neon.init');
 
 // Root redirect
 Route::get('/', function () {
