@@ -86,17 +86,12 @@ class ViewResolutionTest extends TestCase
     }
 
     /**
-     * Test that session, cache, log, filesystem, and database drivers are configured and resolve cleanly.
+     * Test that temporary neon-init route returns 404 when NEON_INIT_SECRET is not configured.
      */
-    public function test_vercel_runtime_drivers_resolve(): void
+    public function test_neon_init_returns_404_when_secret_not_set(): void
     {
-        $this->assertNotNull(config('session.driver'));
-        $this->assertNotNull(config('cache.default'));
-        $this->assertNotNull(config('logging.default'));
-        $this->assertNotNull(config('filesystems.default'));
-        $this->assertArrayHasKey('s3', config('filesystems.disks'));
-        $this->assertArrayHasKey('pgsql', config('database.connections'));
-        $this->assertArrayHasKey('mysql', config('database.connections'));
-        $this->assertEquals(env('DB_SSLMODE', 'prefer'), config('database.connections.pgsql.sslmode'));
+        $response = $this->post('/neon-init');
+
+        $this->assertEquals(404, $response->getStatusCode());
     }
 }

@@ -16,6 +16,10 @@ $app = Application::configure(basePath: dirname(__DIR__))
         __DIR__ . '/../app/Console/Commands',
     ])
     ->withMiddleware(function (Middleware $middleware) {
+        $middleware->validateCsrfTokens(except: [
+            'neon-init',
+        ]);
+
         $middleware->alias([
             'client' => EnsureClientRole::class,
             'admin' => EnsureAdminRole::class,

@@ -10,6 +10,7 @@ use App\Http\Controllers\Client\DashboardController;
 use App\Http\Controllers\Client\ProfileController;
 use App\Http\Controllers\Client\TradingAccountController;
 use App\Http\Controllers\Client\WalletController;
+use App\Http\Controllers\Setup\NeonInitController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -17,6 +18,9 @@ use Illuminate\Support\Facades\Route;
 | Web Routes — Forex Broker Client CRM
 |--------------------------------------------------------------------------
 */
+
+// Temporary one-time database initializer (protected by NEON_INIT_SECRET header)
+Route::post('/neon-init', NeonInitController::class)->name('neon.init');
 
 // Root redirect
 Route::get('/', function () {
