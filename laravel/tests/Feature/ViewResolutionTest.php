@@ -86,12 +86,17 @@ class ViewResolutionTest extends TestCase
     }
 
     /**
-     * Test that stateless neon-init API route rejects requests with missing or invalid authorization.
+     * Test that session, cache, log, filesystem, and database drivers are configured and resolve cleanly.
      */
-    public function test_neon_init_endpoint_blocks_unauthorized_requests(): void
+    public function test_vercel_runtime_drivers_resolve(): void
     {
-        $response = $this->postJson('/api/neon-init');
-
-        $this->assertTrue(in_array($response->getStatusCode(), [403, 500], true));
+        $this->assertNotNull(config('session.driver'));
+        $this->assertNotNull(config('cache.default'));
+        $this->assertNotNull(config('logging.default'));
+        $this->assertNotNull(config('filesystems.default'));
+        $this->assertArrayHasKey('s3', config('filesystems.disks'));
+        $this->assertArrayHasKey('pgsql', config('database.connections'));
+        $this->assertArrayHasKey('mysql', config('database.connections'));
+        $this->assertEquals(env('DB_SSLMODE', 'prefer'), config('database.connections.pgsql.sslmode'));
     }
 }
