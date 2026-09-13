@@ -86,7 +86,7 @@ class ViewResolutionTest extends TestCase
     }
 
     /**
-     * Test that session, cache, log, and filesystem drivers are configured and resolve cleanly.
+     * Test that session, cache, log, filesystem, and database drivers are configured and resolve cleanly.
      */
     public function test_vercel_runtime_drivers_resolve(): void
     {
@@ -95,5 +95,8 @@ class ViewResolutionTest extends TestCase
         $this->assertNotNull(config('logging.default'));
         $this->assertNotNull(config('filesystems.default'));
         $this->assertArrayHasKey('s3', config('filesystems.disks'));
+        $this->assertArrayHasKey('pgsql', config('database.connections'));
+        $this->assertArrayHasKey('mysql', config('database.connections'));
+        $this->assertEquals(env('DB_SSLMODE', 'prefer'), config('database.connections.pgsql.sslmode'));
     }
 }
