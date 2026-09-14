@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import pg from 'pg';
 
 const { Pool } = pg;
@@ -340,11 +339,17 @@ export function getPool(): pg.Pool | null {
     return null;
   }
   if (!pool) {
+    const isLocalhost = databaseUrl.includes('localhost') || databaseUrl.includes('127.0.0.1');
     pool = new Pool({
       connectionString: databaseUrl,
-      ssl: databaseUrl.includes('localhost') ? false : { rejectUnauthorized: false },
-      max: 10,
+      ssl: isLocalhost ? false : { rejectUnauthorized: false },
+      max: 5,
       idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
+    });
+    // Serverless-safe error handler: prevent uncaught exceptions on idle clients
+    pool.on('error', (err: any) => {
+      console.error('[POSTGRES POOL CLIENT ERROR]', err?.message || err);
     });
   }
   return pool;

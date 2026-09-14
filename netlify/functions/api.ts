@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import { Handler, HandlerEvent, HandlerContext } from '@netlify/functions';
 import { AuthService } from './services/auth.service';
 import { FinancialService } from './services/financial.service';
@@ -73,8 +72,8 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
     };
   }
 
-  // Parse path (normalizes /.netlify/functions/api/... or /api/...)
-  let path = event.path.replace(/^\/\.netlify\/functions\/api/, '').replace(/^\/api/, '');
+  // Parse path (normalizes /.netlify/functions/api/..., /api/..., or duplicate /api/api/...)
+  let path = event.path.replace(/^\/\.netlify\/functions\/api/, '').replace(/^(\/api)+/, '');
   if (!path.startsWith('/')) {
     path = '/' + path;
   }
