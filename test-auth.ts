@@ -1,3 +1,4 @@
+import 'dotenv/config';
 process.env.NODE_ENV = 'test';
 process.env.CRM_TEST_MODE = 'true';
 
@@ -95,28 +96,35 @@ async function runTests() {
     const hasAdminInitial = await AuthService.hasAdmin();
     assert(!hasAdminInitial, 'Clean database starts with zero administrator accounts');
 
-    const adminSetup = await AuthService.setupAdmin({
-      email: 'ops.admin@broker.internal',
-      password: 'AdminSecret@123',
-      first_name: 'Ops',
-      last_name: 'Director',
-      country: 'US',
-      preferred_currency: 'USD',
-    });
+    const secret = process.env.ADMIN_SETUP_SECRET || 'forex-crm-secure-admin-setup-secret-2026';
+    const adminSetup = await AuthService.setupAdmin(
+      {
+        email: 'ops.admin@broker.internal',
+        password: 'AdminSecret@123',
+        first_name: 'Ops',
+        last_name: 'Director',
+        country: 'US',
+        preferred_currency: 'USD',
+      },
+      secret
+    );
     assert(adminSetup.user.role === 'admin', 'Setup creates user with "admin" role');
 
     const hasAdminAfter = await AuthService.hasAdmin();
     assert(hasAdminAfter, 'Admin check returns true after admin initialization');
 
     try {
-      await AuthService.setupAdmin({
-        email: 'second.admin@broker.internal',
-        password: 'AdminSecret@123',
-        first_name: 'Second',
-        last_name: 'Admin',
-        country: 'US',
-        preferred_currency: 'USD',
-      });
+      await AuthService.setupAdmin(
+        {
+          email: 'second.admin@broker.internal',
+          password: 'AdminSecret@123',
+          first_name: 'Second',
+          last_name: 'Admin',
+          country: 'US',
+          preferred_currency: 'USD',
+        },
+        secret
+      );
       assert(false, 'Duplicate admin setup should be rejected');
     } catch (e: any) {
       assert(e.message.includes('already been initialized'), 'Subsequent admin setups rejected');

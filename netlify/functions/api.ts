@@ -80,11 +80,14 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
   }
 
   // Extract client IP and user agent for audit logging
-  const clientIp =
+  const rawIp =
     (event.headers['x-forwarded-for'] as string) ||
+    (event.headers['X-Forwarded-For'] as string) ||
     (event.headers['client-ip'] as string) ||
+    (event.headers['x-real-ip'] as string) ||
     '127.0.0.1';
-  const userAgent = (event.headers['user-agent'] as string) || 'unknown';
+  const clientIp = String(rawIp).split(',')[0].trim().substring(0, 100);
+  const userAgent = String((event.headers['user-agent'] as string) || 'unknown').substring(0, 500);
 
   try {
     // -------------------------------------------------------------------------

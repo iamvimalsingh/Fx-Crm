@@ -157,10 +157,10 @@ CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions(created_a
 CREATE TABLE IF NOT EXISTS audit_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     actor_id UUID REFERENCES users(id) ON DELETE SET NULL,
-    action VARCHAR(100) NOT NULL,
-    entity_type VARCHAR(50) NOT NULL,
-    entity_id VARCHAR(100),
-    ip_address VARCHAR(45),
+    action VARCHAR(255) NOT NULL,
+    entity_type VARCHAR(255) NOT NULL,
+    entity_id VARCHAR(255),
+    ip_address VARCHAR(255),
     user_agent TEXT,
     details JSONB,
     created_at TIMESTAMPTZ DEFAULT NOW()

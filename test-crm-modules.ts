@@ -57,6 +57,7 @@ async function runCrmModulesTests() {
       last_name: 'Admin',
       country: 'GB',
       preferred_currency: 'USD',
+      setup_secret: process.env.ADMIN_SETUP_SECRET || 'forex-crm-secure-admin-setup-secret-2026',
     }),
   });
   assert(adminRes.statusCode === 201, 'Super Admin provisioned');

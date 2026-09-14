@@ -21,12 +21,14 @@ export class AuthService {
     const pool = getPool();
     const now = new Date();
     const auditId = crypto.randomUUID();
+    const sanitizedIp = ip ? String(ip).split(',')[0].trim().substring(0, 100) : null;
+    const sanitizedUserAgent = userAgent ? String(userAgent).substring(0, 500) : null;
 
     if (pool) {
       await query(
         `INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, ip_address, user_agent, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [auditId, actorId, action, entityType, entityId, JSON.stringify(details), ip || null, userAgent || null, now]
+        [auditId, actorId, action, entityType, entityId, JSON.stringify(details), sanitizedIp, sanitizedUserAgent, now]
       );
     } else {
       const record: AuditLogRecord = {
@@ -36,8 +38,8 @@ export class AuthService {
         entity_type: entityType,
         entity_id: entityId,
         details,
-        ip_address: ip || null,
-        user_agent: userAgent || null,
+        ip_address: sanitizedIp,
+        user_agent: sanitizedUserAgent,
         created_at: now,
       };
       inMemoryDb.auditLogs.unshift(record);

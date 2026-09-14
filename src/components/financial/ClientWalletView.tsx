@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
+import { parseApiResponse } from '../../lib/api-client';
 import {
   Wallet,
   ArrowDownLeft,
@@ -126,23 +127,25 @@ export function ClientWalletView() {
         fetch('/api/financial/transactions', { headers }),
       ]);
 
-      const dataWallet = await resWallet.json();
-      const dataMethods = await resMethods.json();
-      const dataDeposits = await resDeposits.json();
-      const dataWithdrawals = await resWithdrawals.json();
-      const dataTxns = await resTxns.json();
+      const [dataWallet, dataMethods, dataDeposits, dataWithdrawals, dataTxns] = await Promise.all([
+        parseApiResponse(resWallet),
+        parseApiResponse(resMethods),
+        parseApiResponse(resDeposits),
+        parseApiResponse(resWithdrawals),
+        parseApiResponse(resTxns),
+      ]);
 
-      if (resWallet.ok) setWallet(dataWallet.data);
-      if (resMethods.ok) {
+      if (dataWallet.ok && dataWallet.data) setWallet(dataWallet.data);
+      if (dataMethods.ok && dataMethods.data) {
         setPaymentMethods(dataMethods.data);
         if (dataMethods.data.length > 0) {
           setDepMethodId(dataMethods.data[0].id);
           setWthMethodId(dataMethods.data[0].id);
         }
       }
-      if (resDeposits.ok) setDeposits(dataDeposits.data);
-      if (resWithdrawals.ok) setWithdrawals(dataWithdrawals.data);
-      if (resTxns.ok) setTransactions(dataTxns.data);
+      if (dataDeposits.ok && dataDeposits.data) setDeposits(dataDeposits.data);
+      if (dataWithdrawals.ok && dataWithdrawals.data) setWithdrawals(dataWithdrawals.data);
+      if (dataTxns.ok && dataTxns.data) setTransactions(dataTxns.data);
     } catch (err: any) {
       setError(err.message || 'Failed to load financial records');
     } finally {
@@ -186,12 +189,12 @@ export function ClientWalletView() {
           client_notes: depNotes || null,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.message || 'Failed to submit deposit request');
+      const result = await parseApiResponse(res);
+      if (!result.ok) {
+        throw new Error(result.message || 'Failed to submit deposit request');
       }
 
-      setSuccessMessage(`Deposit request ${data.data.reference_no} submitted successfully for review.`);
+      setSuccessMessage(`Deposit request ${result.data?.reference_no} submitted successfully for review.`);
       setShowDepositModal(false);
       setDepAmount('');
       setDepNotes('');
@@ -232,12 +235,12 @@ export function ClientWalletView() {
           client_notes: wthNotes || null,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.message || 'Failed to submit withdrawal request');
+      const result = await parseApiResponse(res);
+      if (!result.ok) {
+        throw new Error(result.message || 'Failed to submit withdrawal request');
       }
 
-      setSuccessMessage(`Withdrawal ${data.data.withdrawal.reference_no} requested. Funds placed in reserve.`);
+      setSuccessMessage(`Withdrawal ${result.data?.withdrawal?.reference_no || result.data?.reference_no} requested. Funds placed in reserve.`);
       setShowWithdrawModal(false);
       setWthAmount('');
       setWthAccountDest('');
@@ -263,9 +266,9 @@ export function ClientWalletView() {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
       });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.message || 'Failed to cancel withdrawal');
+      const result = await parseApiResponse(res);
+      if (!result.ok) {
+        throw new Error(result.message || 'Failed to cancel withdrawal');
       }
       setSuccessMessage('Withdrawal cancelled. Reserved funds returned to your available balance.');
       fetchData();

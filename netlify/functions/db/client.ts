@@ -327,6 +327,9 @@ export const inMemoryDb: InMemoryDb = new Proxy(_rawInMemoryDb, {
 let pool: pg.Pool | null = null;
 
 export function getPool(): pg.Pool | null {
+  if (DatabaseGuard.isTestMode() || process.env.CRM_TEST_MODE === 'true') {
+    return null;
+  }
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl || databaseUrl.trim() === '') {
     if (!DatabaseGuard.isTestMode()) {

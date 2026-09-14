@@ -77,6 +77,7 @@ async function runTests() {
       first_name: 'Chief',
       last_name: 'Admin',
       country: 'GB',
+      setup_secret: process.env.ADMIN_SETUP_SECRET || 'forex-crm-secure-admin-setup-secret-2026',
     },
   });
   assert(adminSetupRes.status === 201, 'Admin bootstrap succeeded');

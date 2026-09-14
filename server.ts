@@ -11,15 +11,16 @@ async function startServer() {
   app.use(express.json({ limit: '15mb' }));
   app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 
-  // Mount Netlify Functions handler to /api/* in dev/preview
-  app.all('/api/*', async (req, res) => {
+  // 1. API Route Handler (MUST BE BEFORE VITE / STATIC MIDDLEWARES, NEVER CALLS next())
+  app.all(['/api', '/api/*'], async (req, res) => {
     try {
+      const cleanPath = req.originalUrl.split('?')[0];
       const event: any = {
-        path: req.originalUrl,
+        path: cleanPath,
         httpMethod: req.method,
         headers: req.headers,
         queryStringParameters: req.query,
-        body: req.body ? JSON.stringify(req.body) : null,
+        body: req.body && Object.keys(req.body).length > 0 ? JSON.stringify(req.body) : (typeof req.body === 'string' ? req.body : null),
       };
 
       const response = await netlifyApiHandler(event, {} as any);
@@ -29,12 +30,19 @@ async function startServer() {
             res.setHeader(key, String(val));
           }
         }
+        if (!res.getHeader('Content-Type')) {
+          res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        }
         res.status(response.statusCode || 200).send(response.body);
       } else {
-        res.status(500).json({ error: 'Invalid response from function' });
+        res.status(500).setHeader('Content-Type', 'application/json').json({ status: 'error', message: 'Invalid response from function' });
       }
     } catch (err: any) {
-      res.status(500).json({ error: err.message || 'Internal Server Error' });
+      console.error('[API Proxy Error]', err);
+      res.status(500).setHeader('Content-Type', 'application/json').json({
+        status: 'error',
+        message: err.message || 'Internal Server Error'
+      });
     }
   });
 

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { parseApiResponse } from '../lib/api-client';
 import {
   Activity,
   Lock,
@@ -56,10 +57,10 @@ export function AuthViews({
 
   React.useEffect(() => {
     fetch('/api/auth/admin-status')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data?.data?.initialized !== undefined) {
-          setAdminInitialized(data.data.initialized);
+      .then((res) => parseApiResponse(res))
+      .then((result) => {
+        if (result.data?.initialized !== undefined) {
+          setAdminInitialized(result.data.initialized);
         }
       })
       .catch(() => {});
@@ -86,9 +87,9 @@ export function AuthViews({
             setup_secret: adminSetupSecret || undefined,
           }),
         });
-        const data = await res.json();
-        if (res.ok && data?.data?.token) {
-          localStorage.setItem('crm_token', data.data.token);
+        const result = await parseApiResponse(res);
+        if (result.ok && result.data?.token) {
+          localStorage.setItem('crm_token', result.data.token);
           setAdminInitialized(true);
           setIsAdminSetupMode(false);
           setSuccessMsg('Administrator initialized successfully! Redirecting...');
@@ -96,7 +97,7 @@ export function AuthViews({
             window.location.reload();
           }, 400);
         } else {
-          setErrorMsg(data?.message || 'Admin initialization failed');
+          setErrorMsg(result.message || 'Admin initialization failed');
         }
         return;
       }

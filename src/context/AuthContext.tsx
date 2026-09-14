@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { parseApiResponse } from '../lib/api-client';
 
 export interface User {
   id: string | number;
@@ -50,9 +51,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const res = await fetch('/api/auth/me', {
           headers: { Authorization: `Bearer ${storedToken}` },
         });
-        const data = await res.json();
-        if (res.ok && data?.data?.user) {
-          setUser(data.data.user);
+        const result = await parseApiResponse(res);
+        if (result.ok && result.data?.user) {
+          setUser(result.data.user);
           setToken(storedToken);
         } else {
           localStorage.removeItem('crm_token');
@@ -77,16 +78,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       });
-      const data = await res.json();
-      if (res.ok && data?.data?.token) {
-        const receivedToken = data.data.token;
-        const receivedUser = data.data.user;
+      const result = await parseApiResponse(res);
+      if (result.ok && result.data?.token) {
+        const receivedToken = result.data.token;
+        const receivedUser = result.data.user;
         localStorage.setItem('crm_token', receivedToken);
         setToken(receivedToken);
         setUser(receivedUser);
         return { ok: true, role: receivedUser.role };
       } else {
-        return { ok: false, message: data.message || 'Invalid credentials' };
+        return { ok: false, message: result.message || 'Invalid credentials' };
       }
     } catch (err: any) {
       return { ok: false, message: err.message || 'Network error occurred' };
@@ -107,18 +108,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
-      if (res.ok && data?.data?.token) {
-        const receivedToken = data.data.token;
-        const receivedUser = data.data.user;
+      const result = await parseApiResponse(res);
+      if (result.ok && result.data?.token) {
+        const receivedToken = result.data.token;
+        const receivedUser = result.data.user;
         localStorage.setItem('crm_token', receivedToken);
         setToken(receivedToken);
         setUser(receivedUser);
         return { ok: true, role: receivedUser.role };
       } else {
-        const msg = data.errors?.length
-          ? data.errors.map((e: any) => e.message).join(', ')
-          : data.message || 'Registration failed';
+        const msg = result.errors?.length
+          ? result.errors.map((e: any) => e.message).join(', ')
+          : result.message || 'Registration failed';
         return { ok: false, message: msg };
       }
     } catch (err: any) {
@@ -145,10 +146,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
       });
-      const data = await res.json();
+      const result = await parseApiResponse(res);
       return {
-        ok: res.ok,
-        message: data.message || (res.ok ? 'Reset instructions sent.' : 'Failed to send reset link.'),
+        ok: result.ok,
+        message: result.message || (result.ok ? 'Reset instructions sent.' : 'Failed to send reset link.'),
       };
     } catch (err: any) {
       return { ok: false, message: err.message || 'Network error occurred' };
@@ -162,10 +163,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: tokenStr, password }),
       });
-      const data = await res.json();
+      const result = await parseApiResponse(res);
       return {
-        ok: res.ok,
-        message: data.message || (res.ok ? 'Password reset successfully. You can now login.' : 'Password reset failed.'),
+        ok: result.ok,
+        message: result.message || (result.ok ? 'Password reset successfully. You can now login.' : 'Password reset failed.'),
       };
     } catch (err: any) {
       return { ok: false, message: err.message || 'Network error occurred' };
@@ -178,8 +179,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const res = await fetch('/api/admin/check', {
         headers: { Authorization: `Bearer ${token}` },
       });
-      const data = await res.json();
-      return { ok: res.ok, data };
+      const result = await parseApiResponse(res);
+      return { ok: result.ok, data: result.data || { message: result.message } };
     } catch (err: any) {
       return { ok: false, data: { message: err.message } };
     }

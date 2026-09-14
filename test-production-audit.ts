@@ -57,6 +57,7 @@ async function runAuditTests() {
       last_name: 'Auditor',
       country: 'GB',
       preferred_currency: 'USD',
+      setup_secret: process.env.ADMIN_SETUP_SECRET || 'forex-crm-secure-admin-setup-secret-2026',
     }),
   });
   assert(setupRes.statusCode === 201, 'Admin setup returns 201 Created');
