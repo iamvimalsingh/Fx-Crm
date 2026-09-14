@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 
 interface AuthViewsProps {
+  key?: React.Key;
   initialMode?: 'login' | 'register' | 'forgot' | 'reset';
   initialRole?: 'client' | 'admin';
   onSuccessRedirect?: (role: 'client' | 'admin') => void;
@@ -30,10 +31,13 @@ export function AuthViews({
 }: AuthViewsProps) {
   const { login, register, forgotPassword, resetPassword } = useAuth();
 
-  const [mode, setMode] = useState<'login' | 'register' | 'forgot' | 'reset'>(initialMode);
+  const [mode, setMode] = useState<'login' | 'register' | 'forgot' | 'reset'>(
+    initialRole === 'admin' && initialMode === 'register' ? 'login' : initialMode
+  );
   const [authRole, setAuthRole] = useState<'client' | 'admin'>(initialRole);
   const [adminInitialized, setAdminInitialized] = useState<boolean | null>(null);
   const [isAdminSetupMode, setIsAdminSetupMode] = useState(false);
+  const [adminSetupSecret, setAdminSetupSecret] = useState('');
 
   // Form Fields
   const [email, setEmail] = useState('');
@@ -79,6 +83,7 @@ export function AuthViews({
             last_name: lastName || 'Admin',
             country,
             preferred_currency: currency,
+            setup_secret: adminSetupSecret || undefined,
           }),
         });
         const data = await res.json();
@@ -106,7 +111,7 @@ export function AuthViews({
         } else {
           setErrorMsg(res.message || 'Invalid credentials');
         }
-      } else if (mode === 'register') {
+      } else if (mode === 'register' && authRole === 'client') {
         const res = await register({
           email,
           password,
@@ -116,7 +121,7 @@ export function AuthViews({
           preferred_currency: currency,
         });
         if (res.ok) {
-          setSuccessMsg('Account created successfully! Redirecting...');
+          setSuccessMsg('Client account created successfully! Redirecting...');
           setTimeout(() => {
             if (onSuccessRedirect) onSuccessRedirect('client');
           }, 350);
@@ -203,6 +208,7 @@ export function AuthViews({
             type="button"
             onClick={() => {
               setAuthRole('admin');
+              setMode('login');
               setErrorMsg(null);
               setSuccessMsg(null);
             }}
@@ -212,7 +218,7 @@ export function AuthViews({
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
-            Admin Staff
+            Admin Backoffice
           </button>
         </div>
 
@@ -221,7 +227,7 @@ export function AuthViews({
           <div className="p-3 bg-purple-950/40 border border-purple-500/30 rounded-lg space-y-2 text-xs">
             <div className="font-semibold text-purple-300">Initial Setup Mode Active</div>
             <p className="text-slate-400 text-[11px]">
-              No administrator account has been created yet. You can initialize the primary administrator now.
+              No administrator account has been created yet. You can bootstrap the primary administrator account below.
             </p>
             <button
               type="button"
@@ -232,7 +238,7 @@ export function AuthViews({
               }}
               className="px-3 py-1 bg-purple-600 hover:bg-purple-500 text-white text-[11px] font-semibold rounded transition"
             >
-              {isAdminSetupMode ? 'Switch to Admin Login' : 'Create Primary Admin Account'}
+              {isAdminSetupMode ? 'Switch to Standard Admin Login' : 'Bootstrap Primary Administrator'}
             </button>
           </div>
         )}
@@ -253,8 +259,27 @@ export function AuthViews({
 
         {/* Form Container */}
         <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Registration Extra Fields */}
-          {mode === 'register' && (
+          {/* Admin Setup Secret Field (if in bootstrap mode) */}
+          {authRole === 'admin' && isAdminSetupMode && (
+            <div>
+              <label className="block text-xs font-medium text-purple-300 mb-1">
+                Admin Setup Secret (ADMIN_SETUP_SECRET)
+              </label>
+              <div className="relative">
+                <KeyRound className="w-4 h-4 text-purple-400 absolute left-3 top-2.5" />
+                <input
+                  type="password"
+                  value={adminSetupSecret}
+                  onChange={(e) => setAdminSetupSecret(e.target.value)}
+                  className="w-full bg-slate-950 border border-purple-500/40 rounded-lg pl-9 pr-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-purple-500 font-mono"
+                  placeholder="Leave blank if not configured"
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Client Registration Extra Fields */}
+          {authRole === 'client' && mode === 'register' && (
             <>
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -332,14 +357,14 @@ export function AuthViews({
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-9 pr-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
-                  placeholder="name@domain.com"
+                  placeholder={authRole === 'admin' ? 'admin@broker.com' : 'client@domain.com'}
                 />
               </div>
             </div>
           )}
 
           {/* Password field (for login, register) */}
-          {(mode === 'login' || mode === 'register') && (
+          {(mode === 'login' || (authRole === 'client' && mode === 'register') || (authRole === 'admin' && isAdminSetupMode)) && (
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="block text-xs font-medium text-slate-300">Password</label>
@@ -421,8 +446,9 @@ export function AuthViews({
             ) : (
               <>
                 <span>
-                  {mode === 'login' && (authRole === 'admin' ? 'Sign In as Admin' : 'Sign In to Client Portal')}
-                  {mode === 'register' && 'Complete Registration'}
+                  {isAdminSetupMode && authRole === 'admin' && 'Initialize Primary Admin'}
+                  {!isAdminSetupMode && mode === 'login' && (authRole === 'admin' ? 'Sign In as Administrator' : 'Sign In to Client Portal')}
+                  {mode === 'register' && authRole === 'client' && 'Complete Client Registration'}
                   {mode === 'forgot' && 'Send Reset Link'}
                   {mode === 'reset' && 'Confirm New Password'}
                 </span>
@@ -451,7 +477,13 @@ export function AuthViews({
             </p>
           )}
 
-          {mode === 'register' && (
+          {authRole === 'admin' && (
+            <p className="text-[11px] text-slate-500">
+              Admin access is restricted to authorized personnel. Registration is disabled.
+            </p>
+          )}
+
+          {mode === 'register' && authRole === 'client' && (
             <p>
               Already registered?{' '}
               <button

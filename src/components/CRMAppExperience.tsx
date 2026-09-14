@@ -163,6 +163,7 @@ export function CRMAppExperience({
       {!user && (
         <div className="py-6">
           <AuthViews
+            key={`${authTargetRole}_${authFormMode}`}
             initialMode={authFormMode}
             initialRole={authTargetRole}
             brokerName={brokerName}
