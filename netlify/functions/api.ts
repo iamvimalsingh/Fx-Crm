@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { Handler, HandlerEvent, HandlerContext } from '@netlify/functions';
 import { AuthService } from './services/auth.service';
 import { FinancialService } from './services/financial.service';
