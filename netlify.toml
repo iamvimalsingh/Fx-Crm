@@ -8,6 +8,11 @@
 
 # Proxy /api calls to Netlify functions
 [[redirects]]
+  from = "/api"
+  to = "/.netlify/functions/api"
+  status = 200
+
+[[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/api/:splat"
   status = 200

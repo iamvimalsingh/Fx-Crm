@@ -1,9 +1,23 @@
 import { handler } from '../netlify/functions/api';
 
 export default async function (req: any, res: any) {
+  // Support Vercel rewrites with query capture (__path), x-matched-path, originalUrl, and direct url
+  let resolvedPath =
+    (req.headers && (req.headers['x-matched-path'] as string)) ||
+    (req.headers && (req.headers['x-invoke-path'] as string)) ||
+    (req.query && req.query.__path ? `/api/${req.query.__path}` : null) ||
+    req.originalUrl ||
+    req.url ||
+    '/';
+
+  // Strip query string from path if present
+  if (resolvedPath.includes('?')) {
+    resolvedPath = resolvedPath.split('?')[0];
+  }
+
   const event = {
     httpMethod: req.method || 'GET',
-    path: req.url || '/',
+    path: resolvedPath,
     headers: req.headers || {},
     queryStringParameters: req.query || {},
     body: req.body ? (typeof req.body === 'string' ? req.body : JSON.stringify(req.body)) : null,
