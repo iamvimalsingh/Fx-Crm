@@ -74684,8 +74684,8 @@ var handler = async (event, context) => {
   }
 };
 
-// api/index.ts
-async function index_default(req, res) {
+// src/vercel-handler.ts
+async function vercel_handler_default(req, res) {
   let resolvedPath2 = req.headers && req.headers["x-matched-path"] || req.headers && req.headers["x-invoke-path"] || (req.query && req.query.__path ? `/api/${req.query.__path}` : null) || req.originalUrl || req.url || "/";
   if (resolvedPath2.includes("?")) {
     resolvedPath2 = resolvedPath2.split("?")[0];
@@ -74715,7 +74715,7 @@ async function index_default(req, res) {
   }
 }
 export {
-  index_default as default
+  vercel_handler_default as default
 };
 /*! Bundled license information:
 

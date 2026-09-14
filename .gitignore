@@ -9,4 +9,5 @@ coverage/
 !.env.example
 *.zip
 *.tar.gz
+!api/index.js
 
