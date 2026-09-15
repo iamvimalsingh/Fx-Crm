@@ -16,6 +16,8 @@ import {
   AdminUpdateTradingAccountMetadataInput,
 } from '../middleware/validation';
 
+export * from './trading-provider.contract';
+
 export interface TradingAccountWithOwner extends TradingAccountRecord {
   owner?: {
     id: string;

@@ -87,11 +87,18 @@ export function AdminKycView() {
   // Document preview modal inside admin
   const [previewDoc, setPreviewDoc] = useState<{ url: string; mimeType: string; filename: string } | null>(null);
 
+  // Quick row actions
+  const [quickRejectTarget, setQuickRejectTarget] = useState<KycProfileAdminItem | null>(null);
+  const [quickRejectReason, setQuickRejectReason] = useState('');
+  const [submittingQuickAction, setSubmittingQuickAction] = useState(false);
+
   const fetchProfiles = async () => {
     if (!token) return;
     setLoading(true);
     try {
-      const url = `/api/admin/kyc?status=${statusFilter}&limit=50`;
+      const url = statusFilter === 'all'
+        ? `/api/admin/kyc?limit=50`
+        : `/api/admin/kyc?status=${statusFilter}&limit=50`;
       const res = await fetch(url, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -103,6 +110,68 @@ export function AdminKycView() {
       // ignore
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleDirectApprove = async (profileId: string) => {
+    if (!token) return;
+    setSubmittingQuickAction(true);
+    try {
+      const res = await fetch(`/api/admin/kyc/${profileId}/review`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          status: 'approved',
+          admin_notes: 'One-click compliance approval from queue',
+        }),
+      });
+      const json = await res.json();
+      if (res.ok && json.status === 'success') {
+        setMessage({ type: 'success', text: 'Application approved successfully.' });
+        fetchProfiles();
+      } else {
+        setMessage({ type: 'error', text: json.message || 'Failed to approve application' });
+      }
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err.message || 'Error executing approval' });
+    } finally {
+      setSubmittingQuickAction(false);
+    }
+  };
+
+  const handleConfirmQuickReject = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!token || !quickRejectTarget || !quickRejectReason.trim()) return;
+    setSubmittingQuickAction(true);
+    try {
+      const res = await fetch(`/api/admin/kyc/${quickRejectTarget.id}/review`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          status: 'rejected',
+          rejection_reason: quickRejectReason.trim(),
+          admin_notes: 'Compliance rejection from queue',
+        }),
+      });
+      const json = await res.json();
+      if (res.ok && json.status === 'success') {
+        setMessage({ type: 'success', text: 'Application marked as rejected.' });
+        setQuickRejectTarget(null);
+        setQuickRejectReason('');
+        fetchProfiles();
+      } else {
+        setMessage({ type: 'error', text: json.message || 'Failed to reject application' });
+      }
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err.message || 'Error executing rejection' });
+    } finally {
+      setSubmittingQuickAction(false);
     }
   };
 
@@ -346,13 +415,40 @@ export function AdminKycView() {
                       </span>
                     </td>
                     <td className="py-3 px-4 text-right">
-                      <button
-                        onClick={() => handleOpenDetail(p.id)}
-                        className="px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold inline-flex items-center gap-1 transition"
-                      >
-                        <Eye className="w-3.5 h-3.5" />
-                        <span>Review</span>
-                      </button>
+                      <div className="flex items-center justify-end gap-1.5">
+                        {p.status !== 'approved' && (
+                          <button
+                            onClick={() => handleDirectApprove(p.id)}
+                            disabled={submittingQuickAction}
+                            className="px-2 py-1 rounded bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/30 text-xs font-semibold inline-flex items-center gap-1 transition"
+                            title="One-click Approve"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">Approve</span>
+                          </button>
+                        )}
+                        {p.status !== 'rejected' && (
+                          <button
+                            onClick={() => {
+                              setQuickRejectTarget(p);
+                              setQuickRejectReason('');
+                            }}
+                            disabled={submittingQuickAction}
+                            className="px-2 py-1 rounded bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/30 text-xs font-semibold inline-flex items-center gap-1 transition"
+                            title="Reject with reason"
+                          >
+                            <XCircle className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">Reject</span>
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleOpenDetail(p.id)}
+                          className="px-2.5 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold inline-flex items-center gap-1 transition"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>Review</span>
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -637,6 +733,67 @@ export function AdminKycView() {
                 />
               )}
             </div>
+          </div>
+        </div>
+      )}
+      {/* Quick Reject Modal */}
+      {quickRejectTarget && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[70] flex items-center justify-center p-4">
+          <div className="bg-[#161b22] border border-[#30363d] rounded-xl max-w-md w-full p-5 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-[#30363d] pb-3">
+              <div className="flex items-center gap-2 text-rose-400">
+                <XCircle className="w-5 h-5" />
+                <h3 className="font-bold text-white text-sm">Reject KYC Application</h3>
+              </div>
+              <button
+                onClick={() => setQuickRejectTarget(null)}
+                className="text-slate-400 hover:text-white p-1"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-300">
+              Rejecting application for <strong className="text-white">{quickRejectTarget.first_name} {quickRejectTarget.last_name}</strong>. A reason is required to notify the applicant.
+            </p>
+
+            <form onSubmit={handleConfirmQuickReject} className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                  Rejection Reason (Required) *
+                </label>
+                <textarea
+                  rows={3}
+                  required
+                  value={quickRejectReason}
+                  onChange={(e) => setQuickRejectReason(e.target.value)}
+                  placeholder="e.g., Passport photo blurred, expired document, address mismatch..."
+                  className="w-full bg-[#0d1117] border border-rose-500/40 rounded-lg p-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-rose-500"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setQuickRejectTarget(null)}
+                  className="px-3 py-1.5 rounded-lg bg-[#21262d] hover:bg-[#30363d] text-slate-300 text-xs font-semibold transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingQuickAction || !quickRejectReason.trim()}
+                  className="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  {submittingQuickAction ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <XCircle className="w-3.5 h-3.5" />
+                  )}
+                  <span>Confirm Rejection</span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

@@ -4,6 +4,7 @@ import {
   Shield,
   ArrowDownLeft,
   ArrowUpRight,
+  ArrowLeftRight,
   CheckCircle2,
   XCircle,
   Clock,
@@ -16,7 +17,12 @@ import {
   User,
   DollarSign,
   Lock,
+  Eye,
+  Info,
+  Layers,
+  HelpCircle,
 } from 'lucide-react';
+import { Client360Drawer } from '../admin/Client360Drawer';
 
 interface DepositRecord {
   id: string;
@@ -76,13 +82,13 @@ interface AuditLogRecord {
 }
 
 interface AdminFinancialViewProps {
-  initialTab?: 'deposits' | 'withdrawals' | 'transactions' | 'adjustments' | 'audit_logs';
+  initialTab?: 'deposits' | 'withdrawals' | 'transfers' | 'transactions' | 'adjustments' | 'audit_logs';
 }
 
 export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialViewProps) {
   const { token, user } = useAuth();
 
-  const [activeTab, setActiveTab] = useState<'deposits' | 'withdrawals' | 'transactions' | 'adjustments' | 'audit_logs'>(
+  const [activeTab, setActiveTab] = useState<'deposits' | 'withdrawals' | 'transfers' | 'transactions' | 'adjustments' | 'audit_logs'>(
     initialTab
   );
 
@@ -100,9 +106,14 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
+  // Client 360 Inspection Drawer State
+  const [inspectClientId, setInspectClientId] = useState<string | null>(null);
+
   // Filter states
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
   const [searchTerm, setSearchTerm] = useState('');
+  const [txnTypeFilter, setTxnTypeFilter] = useState<string>('all');
+  const [txnDateFilter, setTxnDateFilter] = useState<'all' | 'today' | '7d' | '30d'>('all');
 
   // Approval / Rejection Action Modals
   const [actionItem, setActionItem] = useState<{
@@ -279,6 +290,30 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
     return matchesStatus && matchesSearch;
   });
 
+  // Filtered transactions for unified global ledger
+  const filteredTransactions = transactions.filter((t) => {
+    const matchesType = txnTypeFilter === 'all' || t.type === txnTypeFilter;
+    const matchesSearch =
+      !searchTerm ||
+      t.transaction_no.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      t.user_id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      t.description.toLowerCase().includes(searchTerm.toLowerCase());
+
+    if (!matchesType || !matchesSearch) return false;
+
+    if (txnDateFilter === 'all') return true;
+    const date = new Date(t.created_at).getTime();
+    const now = Date.now();
+    if (txnDateFilter === 'today') return now - date <= 24 * 60 * 60 * 1000;
+    if (txnDateFilter === '7d') return now - date <= 7 * 24 * 60 * 60 * 1000;
+    if (txnDateFilter === '30d') return now - date <= 30 * 24 * 60 * 60 * 1000;
+    return true;
+  });
+
+  const transferTransactions = transactions.filter(
+    (t) => t.type === 'internal_transfer' || t.type === 'transfer' || t.type.includes('transfer')
+  );
+
   const pendingDepositsCount = deposits.filter((d) => d.status === 'pending').length;
   const pendingWithdrawalsCount = withdrawals.filter((w) => w.status === 'pending').length;
 
@@ -425,6 +460,21 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
             </button>
 
             <button
+              onClick={() => setActiveTab('transfers')}
+              className={`pb-3 text-xs font-semibold transition border-b-2 flex items-center gap-2 ${
+                activeTab === 'transfers'
+                  ? 'border-cyan-500 text-cyan-400'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <ArrowLeftRight className="w-4 h-4" />
+              <span>Internal Transfers Queue</span>
+              <span className="px-1.5 py-0.2 rounded-full bg-slate-800 text-slate-400 font-mono text-[10px] border border-slate-700">
+                Offline
+              </span>
+            </button>
+
+            <button
               onClick={() => setActiveTab('transactions')}
               className={`pb-3 text-xs font-semibold transition border-b-2 flex items-center gap-2 ${
                 activeTab === 'transactions'
@@ -462,29 +512,60 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
           </div>
 
           {/* Search bar & status pill filter for lists */}
-          {(activeTab === 'deposits' || activeTab === 'withdrawals') && (
-            <div className="flex items-center gap-2 pb-2">
+          {(activeTab === 'deposits' || activeTab === 'withdrawals' || activeTab === 'transactions' || activeTab === 'transfers') && (
+            <div className="flex flex-wrap items-center gap-2 pb-2">
               <div className="relative">
                 <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2" />
                 <input
                   type="text"
-                  placeholder="Filter by ref, user, method..."
+                  placeholder="Filter by ref, user, text..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  className="bg-[#21262d] border border-[#30363d] rounded-lg pl-8 pr-3 py-1 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 w-48"
+                  className="bg-[#21262d] border border-[#30363d] rounded-lg pl-8 pr-3 py-1 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 w-44 sm:w-52"
                 />
               </div>
 
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as any)}
-                className="bg-[#21262d] border border-[#30363d] rounded-lg px-2.5 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
-              >
-                <option value="all">All Statuses</option>
-                <option value="pending">Pending Only</option>
-                <option value="approved">Approved</option>
-                <option value="rejected">Rejected</option>
-              </select>
+              {(activeTab === 'deposits' || activeTab === 'withdrawals') && (
+                <select
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value as any)}
+                  className="bg-[#21262d] border border-[#30363d] rounded-lg px-2.5 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
+                >
+                  <option value="all">All Statuses</option>
+                  <option value="pending">Pending Only</option>
+                  <option value="approved">Approved</option>
+                  <option value="rejected">Rejected</option>
+                </select>
+              )}
+
+              {activeTab === 'transactions' && (
+                <>
+                  <select
+                    value={txnTypeFilter}
+                    onChange={(e) => setTxnTypeFilter(e.target.value)}
+                    className="bg-[#21262d] border border-[#30363d] rounded-lg px-2.5 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
+                  >
+                    <option value="all">All Transaction Types</option>
+                    <option value="deposit">Deposits</option>
+                    <option value="withdrawal">Withdrawals</option>
+                    <option value="withdrawal_reserve">Withdrawal Reserves</option>
+                    <option value="adjustment_credit">Credit Adjustments</option>
+                    <option value="adjustment_debit">Debit Adjustments</option>
+                    <option value="transfer">Internal Transfers</option>
+                  </select>
+
+                  <select
+                    value={txnDateFilter}
+                    onChange={(e) => setTxnDateFilter(e.target.value as any)}
+                    className="bg-[#21262d] border border-[#30363d] rounded-lg px-2.5 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
+                  >
+                    <option value="all">All Time</option>
+                    <option value="today">Today (24h)</option>
+                    <option value="7d">Last 7 Days</option>
+                    <option value="30d">Last 30 Days</option>
+                  </select>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -516,8 +597,15 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
                       {filteredDeposits.map((dep) => (
                         <tr key={dep.id} className="hover:bg-[#21262d]/50 transition">
                           <td className="py-3 px-3 font-mono font-medium text-slate-200">{dep.reference_no}</td>
-                          <td className="py-3 px-3 font-mono text-[11px] text-slate-300 max-w-[140px] truncate" title={dep.user_id}>
-                            {dep.user_id}
+                          <td className="py-3 px-3">
+                            <button
+                              onClick={() => setInspectClientId(dep.user_id)}
+                              className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 border border-purple-500/20 text-[11px] font-mono transition group max-w-[150px]"
+                              title="Inspect Client 360°"
+                            >
+                              <span className="truncate max-w-[95px]">{dep.user_id}</span>
+                              <Eye className="w-3 h-3 text-purple-400 group-hover:text-purple-200 flex-shrink-0" />
+                            </button>
                           </td>
                           <td className="py-3 px-3 text-slate-300">{dep.payment_method_name}</td>
                           <td className="py-3 px-3 font-bold font-mono text-emerald-400">
@@ -619,8 +707,15 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
                       {filteredWithdrawals.map((wth) => (
                         <tr key={wth.id} className="hover:bg-[#21262d]/50 transition">
                           <td className="py-3 px-3 font-mono font-medium text-slate-200">{wth.reference_no}</td>
-                          <td className="py-3 px-3 font-mono text-[11px] text-slate-300 max-w-[140px] truncate" title={wth.user_id}>
-                            {wth.user_id}
+                          <td className="py-3 px-3">
+                            <button
+                              onClick={() => setInspectClientId(wth.user_id)}
+                              className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 border border-purple-500/20 text-[11px] font-mono transition group max-w-[150px]"
+                              title="Inspect Client 360°"
+                            >
+                              <span className="truncate max-w-[95px]">{wth.user_id}</span>
+                              <Eye className="w-3 h-3 text-purple-400 group-hover:text-purple-200 flex-shrink-0" />
+                            </button>
                           </td>
                           <td className="py-3 px-3 text-slate-300">{wth.payment_method_name}</td>
                           <td className="py-3 px-3 font-bold font-mono text-amber-300">
@@ -701,6 +796,124 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
             </div>
           )}
 
+          {/* INTERNAL TRANSFERS QUEUE & ARCHITECTURAL GOVERNANCE */}
+          {activeTab === 'transfers' && (
+            <div className="space-y-6">
+              {/* Architectural Capability Boundary Banner */}
+              <div className="bg-[#10141d] border border-cyan-500/30 rounded-xl p-5 space-y-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-start gap-3">
+                    <div className="p-2.5 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                      <ArrowLeftRight className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                        <span>Wallet ↔ Trading Account Bridge Queue</span>
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                          Bridge Offline / Backend Support Required
+                        </span>
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-1 max-w-2xl">
+                        Internal fund transfers between CRM Wallets and external trading server engines (MetaTrader 4, MetaTrader 5, cTrader) are intentionally gated to preserve immutable accounting ledger invariants.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Technical Boundary Specification Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
+                  <div className="p-3.5 rounded-lg bg-[#07090e] border border-[#1b222d] space-y-1.5">
+                    <div className="text-[10px] uppercase font-bold text-cyan-400 flex items-center gap-1.5">
+                      <Shield className="w-3.5 h-3.5" />
+                      <span>Domain Isolation Invariant</span>
+                    </div>
+                    <p className="text-[11px] text-slate-300">
+                      CRM Wallets (PostgreSQL single source of truth) and Trading Account balances (external trade server equity) are separate financial realms. Trading equity must never be silently co-mingled with wallet deposits.
+                    </p>
+                  </div>
+
+                  <div className="p-3.5 rounded-lg bg-[#07090e] border border-[#1b222d] space-y-1.5">
+                    <div className="text-[10px] uppercase font-bold text-amber-400 flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5" />
+                      <span>Two-Phase Commit Required</span>
+                    </div>
+                    <p className="text-[11px] text-slate-300">
+                      Requires an atomic two-phase transfer ledger table: Phase 1 reserves wallet funds via existing reservation mechanism; Phase 2 invokes the Trade Server Gateway API (Manager API); Phase 3 clears or reverses the reservation upon trade server confirmation.
+                    </p>
+                  </div>
+
+                  <div className="p-3.5 rounded-lg bg-[#07090e] border border-[#1b222d] space-y-1.5">
+                    <div className="text-[10px] uppercase font-bold text-purple-400 flex items-center gap-1.5">
+                      <Layers className="w-3.5 h-3.5" />
+                      <span>Missing Trade Server Gateway</span>
+                    </div>
+                    <p className="text-[11px] text-slate-300">
+                      Automated execution is halted until MT4/MT5 Server Gateway Manager credentials and dedicated transfer schema (<code className="text-purple-300">internal_transfers</code>) are provisioned in the backend.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Historical Transfers Records in Ledger */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                    Internal Transfer Audit Records ({transferTransactions.length})
+                  </h4>
+                  <span className="text-[11px] text-slate-500 font-mono">
+                    Filtered by type: internal_transfer
+                  </span>
+                </div>
+
+                {transferTransactions.length === 0 ? (
+                  <div className="p-8 text-center bg-[#0d1117] border border-[#21262d] rounded-xl text-slate-500 text-xs">
+                    No internal transfers recorded in the immutable transaction journal.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs border-collapse font-mono">
+                      <thead>
+                        <tr className="border-b border-[#30363d] text-slate-400 uppercase tracking-wider text-[10px]">
+                          <th className="py-2.5 px-3">Txn No</th>
+                          <th className="py-2.5 px-3">Client User</th>
+                          <th className="py-2.5 px-3">Amount</th>
+                          <th className="py-2.5 px-3">Bal Before</th>
+                          <th className="py-2.5 px-3">Bal After</th>
+                          <th className="py-2.5 px-3 font-sans">Description</th>
+                          <th className="py-2.5 px-3">Timestamp</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#21262d]">
+                        {transferTransactions.map((txn) => (
+                          <tr key={txn.id} className="hover:bg-[#21262d]/50 transition text-[11px]">
+                            <td className="py-2.5 px-3 font-semibold text-slate-200">{txn.transaction_no}</td>
+                            <td className="py-2.5 px-3">
+                              <button
+                                onClick={() => setInspectClientId(txn.user_id)}
+                                className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 border border-purple-500/20 text-[11px] font-mono transition group"
+                                title="Inspect Client 360°"
+                              >
+                                <span className="truncate max-w-[100px]">{txn.user_id}</span>
+                                <Eye className="w-3 h-3 text-purple-400 group-hover:text-purple-200" />
+                              </button>
+                            </td>
+                            <td className="py-2.5 px-3 font-bold text-cyan-400">
+                              ${txn.amount} {txn.currency}
+                            </td>
+                            <td className="py-2.5 px-3 text-slate-300">${txn.balance_before}</td>
+                            <td className="py-2.5 px-3 text-slate-300">${txn.balance_after}</td>
+                            <td className="py-2.5 px-3 font-sans text-slate-400">{txn.description}</td>
+                            <td className="py-2.5 px-3 text-slate-400">{new Date(txn.created_at).toLocaleString()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* GLOBAL LEDGER */}
           {activeTab === 'transactions' && (
             <div className="space-y-4">
@@ -725,7 +938,7 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#21262d]">
-                    {transactions.map((txn) => {
+                    {filteredTransactions.map((txn) => {
                       const isCredit = txn.type === 'deposit' || txn.type === 'adjustment_credit';
                       const isDebit = txn.type === 'withdrawal' || txn.type === 'adjustment_debit';
                       const isReserve = txn.type === 'withdrawal_reserve';
@@ -733,8 +946,15 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
                       return (
                         <tr key={txn.id} className="hover:bg-[#21262d]/50 transition text-[11px]">
                           <td className="py-2.5 px-3 font-semibold text-slate-200">{txn.transaction_no}</td>
-                          <td className="py-2.5 px-3 text-slate-400 max-w-[120px] truncate" title={txn.user_id}>
-                            {txn.user_id}
+                          <td className="py-2.5 px-3">
+                            <button
+                              onClick={() => setInspectClientId(txn.user_id)}
+                              className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 border border-purple-500/20 text-[11px] font-mono transition group max-w-[150px]"
+                              title="Inspect Client 360°"
+                            >
+                              <span className="truncate max-w-[95px]">{txn.user_id}</span>
+                              <Eye className="w-3 h-3 text-purple-400 group-hover:text-purple-200 flex-shrink-0" />
+                            </button>
                           </td>
                           <td className="py-2.5 px-3">
                             <span
@@ -1010,6 +1230,12 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
           </div>
         </div>
       )}
+      {/* Client 360° Inspector Drawer preserving active tab & filters */}
+      <Client360Drawer
+        clientId={inspectClientId}
+        onClose={() => setInspectClientId(null)}
+        onClientUpdated={fetchAdminData}
+      />
     </div>
   );
 }

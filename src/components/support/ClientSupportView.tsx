@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
+import { useBrokerSettings } from '../../context/BrokerSettingsContext';
 import {
   HelpCircle,
   PlusCircle,
@@ -18,6 +19,8 @@ import {
   Eye,
   Shield,
   User,
+  Mail,
+  Phone,
 } from 'lucide-react';
 
 interface TicketListItem {
@@ -66,6 +69,7 @@ interface ClientSupportViewProps {
 
 export function ClientSupportView({ initialTicketId }: ClientSupportViewProps) {
   const { token, user } = useAuth();
+  const { branding } = useBrokerSettings();
   const [tickets, setTickets] = useState<TicketListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'list' | 'create' | 'detail'>('list');
@@ -318,6 +322,34 @@ export function ClientSupportView({ initialTicketId }: ClientSupportViewProps) {
 
   return (
     <div className="space-y-6">
+      {/* Broker Support Desk Contact Info Banner */}
+      <div className="bg-[#0b0e14] border border-[#1b222d] rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+            {branding.legal_entity_name || branding.broker_name || 'ForexCore'} Official Support
+          </div>
+          <div className="text-xs text-slate-300 mt-0.5">
+            Our dedicated multilingual operations desk is standing by 24/5 to assist with your trading requirements.
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-4 text-xs font-mono">
+          <a
+            href={`mailto:${branding.support_email || 'support@forexcore.com'}`}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#141a24] hover:bg-[#1c2433] text-blue-400 hover:text-blue-300 border border-[#232c3b] transition"
+          >
+            <Mail className="w-3.5 h-3.5 text-blue-400" />
+            <span>{branding.support_email || 'support@forexcore.com'}</span>
+          </a>
+          <a
+            href={`tel:${(branding.contact_phone || '+44 20 7946 0912').replace(/\s+/g, '')}`}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#141a24] hover:bg-[#1c2433] text-emerald-400 hover:text-emerald-300 border border-[#232c3b] transition"
+          >
+            <Phone className="w-3.5 h-3.5 text-emerald-400" />
+            <span>{branding.contact_phone || '+44 20 7946 0912'}</span>
+          </a>
+        </div>
+      </div>
+
       {/* Header bar */}
       <div className="bg-[#121824] border border-[#26334d] rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
         <div>

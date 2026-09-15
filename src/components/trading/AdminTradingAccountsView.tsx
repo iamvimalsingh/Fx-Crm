@@ -299,6 +299,15 @@ export function AdminTradingAccountsView() {
           </div>
 
           <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
+              <span className="px-2.5 py-1 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-400 font-mono text-[11px] font-semibold flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                Manual Mode (V1)
+              </span>
+              <span className="px-2.5 py-1 rounded-md bg-slate-800 border border-slate-700 text-slate-300 font-mono text-[11px] font-semibold">
+                Bridge Not Configured
+              </span>
+            </div>
             <button
               onClick={fetchAccounts}
               disabled={loading}
@@ -476,10 +485,21 @@ export function AdminTradingAccountsView() {
                         )}
                       </td>
                       <td className="px-4 py-3">
-                        <span className="font-semibold text-white block">{acc.platform}</span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-semibold text-white">{acc.platform}</span>
+                          <span className="px-1.5 py-0.2 rounded text-[9px] font-mono bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                            Provider: {acc.platform}
+                          </span>
+                        </div>
                         <span className="text-slate-400 text-[11px] block truncate max-w-[140px]" title={acc.server_name}>
                           {acc.server_name}
                         </span>
+                        <div className="mt-0.5">
+                          <span className="inline-flex items-center gap-1 text-[9px] font-mono text-amber-400/90 bg-amber-500/10 px-1.5 py-0.2 rounded border border-amber-500/20">
+                            <span className="w-1 h-1 rounded-full bg-amber-400" />
+                            Bridge Not Configured (Manual Mode V1)
+                          </span>
+                        </div>
                       </td>
                       <td className="px-4 py-3">
                         <span className="capitalize text-slate-200 block font-medium">
@@ -884,6 +904,15 @@ export function AdminTradingAccountsView() {
                 <p className="text-[11px] text-slate-400">
                   Owner: {auditModalAccount.account.owner?.email || auditModalAccount.account.user_id}
                 </p>
+                <div className="flex items-center gap-2 mt-1.5">
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                    Provider: {auditModalAccount.account.platform}
+                  </span>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-amber-500/10 text-amber-400 border border-amber-500/20 flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                    Bridge Not Configured (Manual Mode V1)
+                  </span>
+                </div>
               </div>
               <button
                 onClick={() => setAuditModalAccount(null)}

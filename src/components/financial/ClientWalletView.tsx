@@ -5,6 +5,7 @@ import {
   Wallet,
   ArrowDownLeft,
   ArrowUpRight,
+  ArrowLeftRight,
   Clock,
   CheckCircle2,
   XCircle,
@@ -16,6 +17,11 @@ import {
   Info,
   Building,
   ShieldAlert,
+  Search,
+  Sliders,
+  Layers,
+  HelpCircle,
+  ExternalLink,
 } from 'lucide-react';
 
 interface WalletData {
@@ -24,6 +30,18 @@ interface WalletData {
   balance: string;
   reserved_balance: string;
   available_balance: string;
+}
+
+interface TradingAccountSummary {
+  id: string;
+  account_number: string;
+  platform: string;
+  currency: string;
+  balance: string;
+  equity: string;
+  leverage: number;
+  status: string;
+  is_demo: boolean;
 }
 
 interface PaymentMethod {
@@ -89,12 +107,24 @@ export function ClientWalletView() {
   const [deposits, setDeposits] = useState<DepositRecord[]>([]);
   const [withdrawals, setWithdrawals] = useState<WithdrawalRecord[]>([]);
   const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
+  const [tradingAccounts, setTradingAccounts] = useState<TradingAccountSummary[]>([]);
 
-  const [activeTab, setActiveTab] = useState<'deposits' | 'withdrawals' | 'ledger'>('deposits');
+  const [activeTab, setActiveTab] = useState<'deposits' | 'withdrawals' | 'transfers' | 'ledger'>('deposits');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  // Transfer Form state
+  const [transferDirection, setTransferDirection] = useState<'wallet_to_trading' | 'trading_to_wallet'>('wallet_to_trading');
+  const [selectedTradingAccountId, setSelectedTradingAccountId] = useState<string>('');
+  const [transferAmount, setTransferAmount] = useState('');
+  const [transferNotes, setTransferNotes] = useState('');
+
+  // Ledger Filter states
+  const [ledgerSearch, setLedgerSearch] = useState('');
+  const [ledgerTypeFilter, setLedgerTypeFilter] = useState('all');
+  const [ledgerDateFilter, setLedgerDateFilter] = useState('all');
 
   // Modals
   const [showDepositModal, setShowDepositModal] = useState(false);
@@ -119,20 +149,22 @@ export function ClientWalletView() {
       setError(null);
       const headers = { Authorization: `Bearer ${token}` };
 
-      const [resWallet, resMethods, resDeposits, resWithdrawals, resTxns] = await Promise.all([
+      const [resWallet, resMethods, resDeposits, resWithdrawals, resTxns, resAccounts] = await Promise.all([
         fetch('/api/financial/wallet', { headers }),
         fetch('/api/financial/payment-methods'),
         fetch('/api/financial/deposits', { headers }),
         fetch('/api/financial/withdrawals', { headers }),
         fetch('/api/financial/transactions', { headers }),
+        fetch('/api/trading/accounts', { headers }),
       ]);
 
-      const [dataWallet, dataMethods, dataDeposits, dataWithdrawals, dataTxns] = await Promise.all([
+      const [dataWallet, dataMethods, dataDeposits, dataWithdrawals, dataTxns, dataAccounts] = await Promise.all([
         parseApiResponse(resWallet),
         parseApiResponse(resMethods),
         parseApiResponse(resDeposits),
         parseApiResponse(resWithdrawals),
         parseApiResponse(resTxns),
+        parseApiResponse(resAccounts),
       ]);
 
       if (dataWallet.ok && dataWallet.data) setWallet(dataWallet.data);
@@ -146,6 +178,12 @@ export function ClientWalletView() {
       if (dataDeposits.ok && dataDeposits.data) setDeposits(dataDeposits.data);
       if (dataWithdrawals.ok && dataWithdrawals.data) setWithdrawals(dataWithdrawals.data);
       if (dataTxns.ok && dataTxns.data) setTransactions(dataTxns.data);
+      if (dataAccounts.ok && dataAccounts.data) {
+        setTradingAccounts(dataAccounts.data);
+        if (dataAccounts.data.length > 0 && !selectedTradingAccountId) {
+          setSelectedTradingAccountId(dataAccounts.data[0].id);
+        }
+      }
     } catch (err: any) {
       setError(err.message || 'Failed to load financial records');
     } finally {
@@ -282,6 +320,58 @@ export function ClientWalletView() {
   const selectedDepositMethod = paymentMethods.find((p) => p.id === depMethodId);
   const selectedWithdrawalMethod = paymentMethods.find((p) => p.id === wthMethodId);
 
+  const selectedTradingAccount =
+    tradingAccounts.find((a) => a.id === selectedTradingAccountId) || tradingAccounts[0];
+
+  // Filtered transactions for client ledger
+  const filteredTransactions = transactions.filter((t) => {
+    const matchesType = ledgerTypeFilter === 'all' || t.type === ledgerTypeFilter;
+    const matchesSearch =
+      !ledgerSearch ||
+      t.transaction_no.toLowerCase().includes(ledgerSearch.toLowerCase()) ||
+      t.description.toLowerCase().includes(ledgerSearch.toLowerCase());
+
+    if (!matchesType || !matchesSearch) return false;
+
+    if (ledgerDateFilter === 'all') return true;
+    const date = new Date(t.created_at).getTime();
+    const now = Date.now();
+    if (ledgerDateFilter === 'today') return now - date <= 24 * 60 * 60 * 1000;
+    if (ledgerDateFilter === '7d') return now - date <= 7 * 24 * 60 * 60 * 1000;
+    if (ledgerDateFilter === '30d') return now - date <= 30 * 24 * 60 * 60 * 1000;
+    return true;
+  });
+
+  const transferTransactions = transactions.filter(
+    (t) => t.type === 'internal_transfer' || t.type === 'transfer' || t.type.includes('transfer')
+  );
+
+  const [showBridgeModal, setShowBridgeModal] = useState(false);
+
+  const handleTransferSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!transferAmount || parseFloat(transferAmount) <= 0) {
+      setError('Please specify a valid transfer amount greater than $0.00');
+      return;
+    }
+    const amountNum = parseFloat(transferAmount);
+    if (transferDirection === 'wallet_to_trading') {
+      const avail = parseFloat(wallet?.available_balance || '0');
+      if (amountNum > avail) {
+        setError(`Transfer amount ($${amountNum.toFixed(2)}) exceeds available wallet balance ($${avail.toFixed(2)}).`);
+        return;
+      }
+    } else {
+      const acctBal = parseFloat(selectedTradingAccount?.balance || '0');
+      if (amountNum > acctBal) {
+        setError(`Transfer amount ($${amountNum.toFixed(2)}) exceeds trading account balance ($${acctBal.toFixed(2)}).`);
+        return;
+      }
+    }
+    setError(null);
+    setShowBridgeModal(true);
+  };
+
   return (
     <div className="space-y-6">
       {/* Notifications */}
@@ -336,6 +426,13 @@ export function ClientWalletView() {
             >
               <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
               <span className="hidden sm:inline">Refresh</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('transfers')}
+              className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold flex items-center gap-1.5 shadow transition"
+            >
+              <ArrowLeftRight className="w-4 h-4" />
+              <span>Internal Transfer</span>
             </button>
             <button
               onClick={() => setShowDepositModal(true)}
@@ -427,6 +524,20 @@ export function ClientWalletView() {
           >
             <ArrowUpRight className="w-4 h-4" />
             <span>Withdrawals History ({withdrawals.length})</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('transfers')}
+            className={`pb-3 text-xs font-semibold transition border-b-2 flex items-center gap-2 ${
+              activeTab === 'transfers'
+                ? 'border-cyan-500 text-cyan-400'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <ArrowLeftRight className="w-4 h-4" />
+            <span>Internal Transfers</span>
+            <span className="px-1.5 py-0.2 rounded-full bg-slate-800 text-slate-400 font-mono text-[10px] border border-slate-700">
+              Bridge
+            </span>
           </button>
           <button
             onClick={() => setActiveTab('ledger')}
@@ -602,17 +713,341 @@ export function ClientWalletView() {
             </div>
           )}
 
-          {/* IMMUTABLE LEDGER TABLE */}
+          {/* INTERNAL TRANSFERS TAB */}
+          {activeTab === 'transfers' && (
+            <div className="space-y-6">
+              {/* Architectural Notice Banner */}
+              <div className="p-4 rounded-xl bg-cyan-950/30 border border-cyan-500/30 text-cyan-200 text-xs">
+                <div className="flex items-start gap-3">
+                  <div className="p-2 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 mt-0.5">
+                    <ArrowLeftRight className="w-5 h-5" />
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-white text-sm">Internal Account Bridge</span>
+                      <span className="px-2 py-0.5 rounded bg-amber-500/20 border border-amber-500/30 text-amber-300 font-mono text-[10px] font-bold">
+                        Bridge Status: Offline / Gateway Integration Required
+                      </span>
+                    </div>
+                    <p className="text-slate-300 text-xs leading-relaxed">
+                      Move capital seamlessly between your primary CRM wallet and live MetaTrader 4/5 trading accounts.
+                      Transfers execute with zero internal fees and maintain full audit traceability across ledger systems.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* Transfer Form Card */}
+                <div className="lg:col-span-7 bg-[#182030] border border-[#26334d] rounded-xl p-5 space-y-5">
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2 pb-3 border-b border-[#26334d]">
+                    <ArrowLeftRight className="w-4 h-4 text-cyan-400" />
+                    <span>Initiate Account Transfer</span>
+                  </h3>
+
+                  <form onSubmit={handleTransferSubmit} className="space-y-4">
+                    {/* Direction Switcher */}
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                        Transfer Direction
+                      </label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setTransferDirection('wallet_to_trading')}
+                          className={`p-3 rounded-xl border text-left transition flex flex-col gap-1 ${
+                            transferDirection === 'wallet_to_trading'
+                              ? 'bg-cyan-500/10 border-cyan-500/50 text-white shadow-sm'
+                              : 'bg-[#121824] border-[#26334d] text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <Wallet className="w-4 h-4 text-cyan-400" />
+                            <span className="text-xs font-bold text-cyan-300">Wallet → Trading</span>
+                          </div>
+                          <span className="text-[10px] text-slate-400">Deposit into MetaTrader</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setTransferDirection('trading_to_wallet')}
+                          className={`p-3 rounded-xl border text-left transition flex flex-col gap-1 ${
+                            transferDirection === 'trading_to_wallet'
+                              ? 'bg-cyan-500/10 border-cyan-500/50 text-white shadow-sm'
+                              : 'bg-[#121824] border-[#26334d] text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <ArrowDownLeft className="w-4 h-4 text-cyan-400" />
+                            <span className="text-xs font-bold text-cyan-300">Trading → Wallet</span>
+                          </div>
+                          <span className="text-[10px] text-slate-400">Withdraw to CRM Wallet</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Trading Account Selector */}
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                        Target Trading Account
+                      </label>
+                      {tradingAccounts.length === 0 ? (
+                        <div className="p-3 rounded-lg bg-[#121824] border border-[#26334d] text-xs text-slate-400">
+                          No active trading accounts found for this profile. Please request or activate a trading account first.
+                        </div>
+                      ) : (
+                        <select
+                          value={selectedTradingAccountId || tradingAccounts[0]?.id || ''}
+                          onChange={(e) => setSelectedTradingAccountId(e.target.value)}
+                          className="w-full bg-[#121824] border border-[#26334d] rounded-lg px-3 py-2 text-white text-xs focus:outline-none focus:border-cyan-500 font-mono"
+                        >
+                          {tradingAccounts.map((acc) => (
+                            <option key={acc.id} value={acc.id}>
+                              {acc.platform.toUpperCase()} #{acc.account_number} — Balance: ${acc.balance} {acc.currency} (Eq: ${acc.equity})
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+
+                    {/* Source & Destination Preview */}
+                    <div className="p-3 rounded-lg bg-[#121824] border border-[#26334d] grid grid-cols-2 gap-4 text-xs">
+                      <div>
+                        <div className="text-[10px] uppercase font-bold text-slate-500">Source Account</div>
+                        <div className="font-semibold text-slate-200 mt-0.5">
+                          {transferDirection === 'wallet_to_trading' ? 'CRM Primary Wallet' : `Account #${selectedTradingAccount?.account_number || 'N/A'}`}
+                        </div>
+                        <div className="text-[11px] text-emerald-400 font-mono mt-0.5">
+                          Avail: ${transferDirection === 'wallet_to_trading' ? (wallet?.available_balance || '0.00') : (selectedTradingAccount?.balance || '0.00')}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase font-bold text-slate-500">Destination Account</div>
+                        <div className="font-semibold text-slate-200 mt-0.5">
+                          {transferDirection === 'wallet_to_trading' ? `Account #${selectedTradingAccount?.account_number || 'N/A'}` : 'CRM Primary Wallet'}
+                        </div>
+                        <div className="text-[11px] text-cyan-400 font-mono mt-0.5">
+                          Current: ${transferDirection === 'wallet_to_trading' ? (selectedTradingAccount?.balance || '0.00') : (wallet?.available_balance || '0.00')}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Amount Input */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                          Transfer Amount ($)
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (transferDirection === 'wallet_to_trading') {
+                              setTransferAmount(wallet?.available_balance || '0.00');
+                            } else {
+                              setTransferAmount(selectedTradingAccount?.balance || '0.00');
+                            }
+                          }}
+                          className="text-[10px] font-bold text-cyan-400 hover:text-cyan-300 transition"
+                        >
+                          Use Max Available
+                        </button>
+                      </div>
+                      <div className="relative">
+                        <span className="absolute left-3 top-2.5 text-slate-500 text-xs font-mono">$</span>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="1"
+                          required
+                          value={transferAmount}
+                          onChange={(e) => setTransferAmount(e.target.value)}
+                          placeholder="0.00"
+                          className="w-full bg-[#121824] border border-[#26334d] rounded-lg pl-7 pr-3 py-2 text-white text-xs focus:outline-none focus:border-cyan-500 font-mono"
+                        >
+                        </input>
+                      </div>
+                    </div>
+
+                    {/* Optional Notes */}
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                        Transfer Memo (Optional)
+                      </label>
+                      <input
+                        type="text"
+                        value={transferNotes}
+                        onChange={(e) => setTransferNotes(e.target.value)}
+                        placeholder="e.g. Allocation for live trading week"
+                        className="w-full bg-[#121824] border border-[#26334d] rounded-lg px-3 py-2 text-white text-xs focus:outline-none focus:border-cyan-500"
+                      />
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="w-full py-2.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold transition flex items-center justify-center gap-2 shadow"
+                    >
+                      <ArrowLeftRight className="w-4 h-4" />
+                      <span>Review & Execute Transfer</span>
+                    </button>
+                  </form>
+                </div>
+
+                {/* Architecture & Invariants Card */}
+                <div className="lg:col-span-5 space-y-4">
+                  <div className="bg-[#182030] border border-[#26334d] rounded-xl p-5 space-y-4">
+                    <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                      <ShieldAlert className="w-4 h-4 text-amber-400" />
+                      <span>Bridge Architecture & Integrity</span>
+                    </h4>
+
+                    <div className="space-y-3 text-xs text-slate-300">
+                      <div className="p-3 rounded-lg bg-[#121824] border border-[#26334d] space-y-1">
+                        <div className="font-bold text-cyan-300 text-[11px]">Domain Isolation Principle</div>
+                        <p className="text-slate-400 text-[11px] leading-relaxed">
+                          CRM Wallets reside in our ACID-compliant PostgreSQL database as the legal financial single source of truth.
+                          Trading account balances live inside MetaTrader trade servers.
+                        </p>
+                      </div>
+
+                      <div className="p-3 rounded-lg bg-[#121824] border border-[#26334d] space-y-1">
+                        <div className="font-bold text-amber-300 text-[11px]">Two-Phase Commit Protocol</div>
+                        <p className="text-slate-400 text-[11px] leading-relaxed">
+                          Internal transfers execute a two-phase protocol: debiting available balance, holding in transit, invoking the MT4/MT5 Gateway Manager API, and final credit commitment upon gateway acknowledgment.
+                        </p>
+                      </div>
+
+                      <div className="p-3 rounded-lg bg-[#121824] border border-[#26334d] space-y-1">
+                        <div className="font-bold text-emerald-300 text-[11px]">Zero Fee Guarantee</div>
+                        <p className="text-slate-400 text-[11px] leading-relaxed">
+                          All internal transfers between registered accounts belonging to the same verified client profile incur $0.00 fee.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Transfer Transactions from Ledger */}
+              <div className="bg-[#182030] border border-[#26334d] rounded-xl p-5 space-y-3">
+                <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center justify-between">
+                  <span className="flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-cyan-400" />
+                    <span>Internal Transfer History</span>
+                  </span>
+                  <span className="text-[11px] text-slate-400 font-normal font-mono">
+                    {transferTransactions.length} recorded
+                  </span>
+                </h4>
+
+                {transferTransactions.length === 0 ? (
+                  <div className="text-center py-8 text-slate-500 text-xs">
+                    No internal transfers have been completed yet.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs border-collapse font-mono">
+                      <thead>
+                        <tr className="border-b border-[#26334d] text-slate-400 uppercase tracking-wider text-[10px]">
+                          <th className="py-2 px-3">Txn No</th>
+                          <th className="py-2 px-3">Amount</th>
+                          <th className="py-2 px-3">Balance Before</th>
+                          <th className="py-2 px-3">Balance After</th>
+                          <th className="py-2 px-3 font-sans">Details</th>
+                          <th className="py-2 px-3">Date</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#1e273a]">
+                        {transferTransactions.map((tx) => (
+                          <tr key={tx.id} className="hover:bg-[#121824]/50 text-[11px]">
+                            <td className="py-2 px-3 font-semibold text-cyan-300">{tx.transaction_no}</td>
+                            <td className="py-2 px-3 font-bold text-white">${tx.amount}</td>
+                            <td className="py-2 px-3 text-slate-400">${tx.balance_before}</td>
+                            <td className="py-2 px-3 text-emerald-400">${tx.balance_after}</td>
+                            <td className="py-2 px-3 font-sans text-slate-300 max-w-xs truncate">{tx.description}</td>
+                            <td className="py-2 px-3 text-slate-500 text-[10px]">{new Date(tx.created_at).toLocaleString()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* IMMUTABLE LEDGER TABLE WITH FILTERS & SEARCH */}
           {activeTab === 'ledger' && (
             <div className="space-y-4">
-              <div className="flex items-center justify-between text-xs text-slate-400 pb-2 border-b border-[#26334d]">
+              <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400 pb-2 border-b border-[#26334d]">
                 <div className="flex items-center gap-2">
                   <ShieldAlert className="w-4 h-4 text-indigo-400" />
                   <span>
                     Immutable double-entry balance trail. Every debit, credit, and reservation retains exact balance snapshots.
                   </span>
                 </div>
-                <span className="font-mono text-[11px] text-indigo-300">{transactions.length} Ledger Records</span>
+                <span className="font-mono text-[11px] text-indigo-300">
+                  Showing {filteredTransactions.length} of {transactions.length} Ledger Records
+                </span>
+              </div>
+
+              {/* Filter Controls Bar */}
+              <div className="p-3 rounded-xl bg-[#182030] border border-[#26334d] flex flex-wrap items-center gap-3">
+                {/* Search */}
+                <div className="relative flex-1 min-w-[200px]">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    value={ledgerSearch}
+                    onChange={(e) => setLedgerSearch(e.target.value)}
+                    placeholder="Search by transaction no or description..."
+                    className="w-full bg-[#121824] border border-[#26334d] rounded-lg pl-8 pr-3 py-1.5 text-white text-xs placeholder:text-slate-500 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+
+                {/* Type Filter */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[11px] text-slate-400 uppercase font-semibold">Type:</span>
+                  <select
+                    value={ledgerTypeFilter}
+                    onChange={(e) => setLedgerTypeFilter(e.target.value)}
+                    className="bg-[#121824] border border-[#26334d] rounded-lg px-2.5 py-1.5 text-slate-200 text-xs focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="all">All Types</option>
+                    <option value="deposit">Deposits</option>
+                    <option value="withdrawal">Withdrawals</option>
+                    <option value="withdrawal_reserve">Reservations</option>
+                    <option value="adjustment_credit">Credit Adjustments</option>
+                    <option value="adjustment_debit">Debit Adjustments</option>
+                  </select>
+                </div>
+
+                {/* Date Filter */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[11px] text-slate-400 uppercase font-semibold">Period:</span>
+                  <select
+                    value={ledgerDateFilter}
+                    onChange={(e) => setLedgerDateFilter(e.target.value)}
+                    className="bg-[#121824] border border-[#26334d] rounded-lg px-2.5 py-1.5 text-slate-200 text-xs focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="all">All Time</option>
+                    <option value="today">Today (24h)</option>
+                    <option value="7d">Last 7 Days</option>
+                    <option value="30d">Last 30 Days</option>
+                  </select>
+                </div>
+
+                {(ledgerSearch || ledgerTypeFilter !== 'all' || ledgerDateFilter !== 'all') && (
+                  <button
+                    onClick={() => {
+                      setLedgerSearch('');
+                      setLedgerTypeFilter('all');
+                      setLedgerDateFilter('all');
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition"
+                  >
+                    Reset Filters
+                  </button>
+                )}
               </div>
 
               <div className="overflow-x-auto">
@@ -631,14 +1066,14 @@ export function ClientWalletView() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#1e273a]">
-                    {transactions.length === 0 ? (
+                    {filteredTransactions.length === 0 ? (
                       <tr>
                         <td colSpan={9} className="py-8 text-center text-slate-500 font-sans">
-                          No ledger transactions recorded yet.
+                          {transactions.length === 0 ? 'No ledger transactions recorded yet.' : 'No transactions match the selected filters.'}
                         </td>
                       </tr>
                     ) : (
-                      transactions.map((txn) => {
+                      filteredTransactions.map((txn) => {
                         const isCredit = txn.type === 'deposit' || txn.type === 'adjustment_credit';
                         const isDebit = txn.type === 'withdrawal' || txn.type === 'adjustment_debit';
                         const isReserve = txn.type === 'withdrawal_reserve';
@@ -689,6 +1124,62 @@ export function ClientWalletView() {
           )}
         </div>
       </div>
+
+      {/* INTERNAL TRANSFER BRIDGE NOTICE MODAL */}
+      {showBridgeModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
+          <div className="bg-[#121824] border border-cyan-500/30 rounded-2xl max-w-lg w-full p-6 space-y-5 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-[#26334d] pb-4">
+              <div className="flex items-center gap-2">
+                <ArrowLeftRight className="w-5 h-5 text-cyan-400" />
+                <h3 className="text-base font-bold text-white">Internal Transfer Bridge Status</h3>
+              </div>
+              <button
+                onClick={() => setShowBridgeModal(false)}
+                className="text-slate-400 hover:text-slate-200 text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-4 text-xs text-slate-300">
+              <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 space-y-1">
+                <div className="font-bold flex items-center gap-2 text-sm">
+                  <ShieldAlert className="w-4 h-4 text-amber-400" />
+                  <span>Gateway Integration Required</span>
+                </div>
+                <p className="text-[11px] text-amber-300/90 leading-relaxed">
+                  Transfer of <strong className="text-white font-mono">${parseFloat(transferAmount || '0').toFixed(2)}</strong> from{' '}
+                  <strong className="text-white">
+                    {transferDirection === 'wallet_to_trading' ? 'CRM Primary Wallet' : `Trading Account #${selectedTradingAccount?.account_number}`}
+                  </strong>{' '}
+                  to{' '}
+                  <strong className="text-white">
+                    {transferDirection === 'wallet_to_trading' ? `Trading Account #${selectedTradingAccount?.account_number}` : 'CRM Primary Wallet'}
+                  </strong>{' '}
+                  is queued under Bridge Governance.
+                </p>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-[#182030] border border-[#26334d] space-y-2 text-slate-300">
+                <div className="font-semibold text-white">Why is this request protected?</div>
+                <p className="text-[11px] leading-relaxed text-slate-400">
+                  CRM wallets and trade servers operate in distinct financial state machines. In order to guarantee zero balance discrepancy or double-spending, live execution requires an atomic two-phase commit over the broker&apos;s MetaTrader 4 / MetaTrader 5 Gateway Service.
+                </p>
+              </div>
+
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  onClick={() => setShowBridgeModal(false)}
+                  className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-semibold text-xs transition"
+                >
+                  Understood
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* DEPOSIT MODAL */}
       {showDepositModal && (

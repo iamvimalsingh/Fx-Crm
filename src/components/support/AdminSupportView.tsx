@@ -94,7 +94,9 @@ export function AdminSupportView() {
     if (!token) return;
     setLoading(true);
     try {
-      const url = `/api/admin/support/tickets?status=${statusFilter}&limit=100`;
+      const url = statusFilter === 'all'
+        ? `/api/admin/support/tickets?limit=100`
+        : `/api/admin/support/tickets?status=${statusFilter}&limit=100`;
       const res = await fetch(url, {
         headers: { Authorization: `Bearer ${token}` },
       });

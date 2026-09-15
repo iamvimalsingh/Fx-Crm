@@ -45202,7 +45202,7 @@ var require_jsonwebtoken = __commonJS({
 });
 
 // netlify/functions/services/auth.service.ts
-import crypto3 from "crypto";
+import crypto4 from "crypto";
 
 // node_modules/bcryptjs/index.js
 import nodeCrypto from "crypto";
@@ -47287,6 +47287,7 @@ var InMemoryDb = class {
     this.supportMessages = [];
     this.supportAttachments = [];
     this.notifications = [];
+    this.systemSettings = /* @__PURE__ */ new Map();
   }
   clear() {
     this.users.clear();
@@ -47304,6 +47305,7 @@ var InMemoryDb = class {
     this.supportMessages = [];
     this.supportAttachments = [];
     this.notifications = [];
+    this.systemSettings.clear();
   }
 };
 var _rawInMemoryDb = new InMemoryDb();
@@ -47485,6 +47487,129 @@ var MailService = class {
   }
 };
 
+// netlify/functions/services/notification.service.ts
+import crypto3 from "crypto";
+var NotificationService = class {
+  /**
+   * Creates a notification for a user in response to a real CRM event
+   */
+  static async createNotification(userId, title, message, type, data = {}) {
+    const pool2 = getPool();
+    const notificationId = crypto3.randomUUID();
+    const now = /* @__PURE__ */ new Date();
+    const record2 = {
+      id: notificationId,
+      user_id: userId,
+      title,
+      message,
+      type,
+      data,
+      is_read: false,
+      read_at: null,
+      created_at: now
+    };
+    if (pool2) {
+      await query(
+        `INSERT INTO notifications (id, user_id, title, message, type, data, is_read, read_at, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [
+          record2.id,
+          record2.user_id,
+          record2.title,
+          record2.message,
+          record2.type,
+          JSON.stringify(record2.data),
+          record2.is_read,
+          record2.read_at,
+          record2.created_at
+        ]
+      );
+    } else {
+      inMemoryDb.notifications.unshift(record2);
+    }
+    return record2;
+  }
+  /**
+   * Fetches user notifications with pagination
+   */
+  static async getUserNotifications(userId, limit = 20, offset = 0) {
+    const pool2 = getPool();
+    if (pool2) {
+      const rows = await query(
+        `SELECT * FROM notifications
+         WHERE user_id = $1
+         ORDER BY created_at DESC
+         LIMIT $2 OFFSET $3`,
+        [userId, limit, offset]
+      );
+      const unreadRows = await query(
+        `SELECT COUNT(*) as count FROM notifications
+         WHERE user_id = $1 AND is_read = false`,
+        [userId]
+      );
+      const unreadCount = parseInt(unreadRows[0]?.count || "0", 10);
+      return { notifications: rows, unreadCount };
+    } else {
+      const userNotifs = inMemoryDb.notifications.filter((n3) => n3.user_id === userId);
+      const unreadCount = userNotifs.filter((n3) => !n3.is_read).length;
+      const paginated = userNotifs.slice(offset, offset + limit);
+      return { notifications: paginated, unreadCount };
+    }
+  }
+  /**
+   * Marks a specific notification as read (with user ID authorization check)
+   */
+  static async markAsRead(notificationId, userId) {
+    const pool2 = getPool();
+    const now = /* @__PURE__ */ new Date();
+    if (pool2) {
+      const res = await query(
+        `UPDATE notifications
+         SET is_read = true, read_at = $1
+         WHERE id = $2 AND user_id = $3
+         RETURNING id`,
+        [now, notificationId, userId]
+      );
+      return res.length > 0;
+    } else {
+      const notif = inMemoryDb.notifications.find((n3) => n3.id === notificationId && n3.user_id === userId);
+      if (!notif) {
+        return false;
+      }
+      notif.is_read = true;
+      notif.read_at = now;
+      return true;
+    }
+  }
+  /**
+   * Marks all notifications as read for a user
+   */
+  static async markAllAsRead(userId) {
+    const pool2 = getPool();
+    const now = /* @__PURE__ */ new Date();
+    if (pool2) {
+      const res = await query(
+        `UPDATE notifications
+         SET is_read = true, read_at = $1
+         WHERE user_id = $2 AND is_read = false
+         RETURNING id`,
+        [now, userId]
+      );
+      return res.length;
+    } else {
+      let count = 0;
+      for (const notif of inMemoryDb.notifications) {
+        if (notif.user_id === userId && !notif.is_read) {
+          notif.is_read = true;
+          notif.read_at = now;
+          count++;
+        }
+      }
+      return count;
+    }
+  }
+};
+
 // netlify/functions/services/auth.service.ts
 var AuthService = class {
   /**
@@ -47493,7 +47618,7 @@ var AuthService = class {
   static async recordAuditLog(actorId, action, entityType, entityId, details, ip, userAgent) {
     const pool2 = getPool();
     const now = /* @__PURE__ */ new Date();
-    const auditId = crypto3.randomUUID();
+    const auditId = crypto4.randomUUID();
     const sanitizedIp = ip ? String(ip).split(",")[0].trim().substring(0, 100) : null;
     const sanitizedUserAgent = userAgent ? String(userAgent).substring(0, 500) : null;
     if (pool2) {
@@ -47533,7 +47658,7 @@ var AuthService = class {
       }
     }
     const passwordHash = await bcryptjs_default.hash(input2.password, 10);
-    const userId = crypto3.randomUUID();
+    const userId = crypto4.randomUUID();
     const now = /* @__PURE__ */ new Date();
     const newUser = {
       id: userId,
@@ -47571,12 +47696,12 @@ var AuthService = class {
       await query(
         `INSERT INTO wallets (id, user_id, currency, balance, reserved_balance, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [crypto3.randomUUID(), newUser.id, newUser.preferred_currency, "0.00", "0.00", now, now]
+        [crypto4.randomUUID(), newUser.id, newUser.preferred_currency, "0.00", "0.00", now, now]
       );
     } else {
       inMemoryDb.users.set(emailNormalized, newUser);
       const userWallet = {
-        id: crypto3.randomUUID(),
+        id: crypto4.randomUUID(),
         user_id: newUser.id,
         currency: newUser.preferred_currency,
         balance: "0.00",
@@ -47703,11 +47828,11 @@ var AuthService = class {
         }
       }
     }
-    const rawToken = crypto3.randomBytes(32).toString("hex");
-    const tokenHash = crypto3.createHash("sha256").update(rawToken).digest("hex");
+    const rawToken = crypto4.randomBytes(32).toString("hex");
+    const tokenHash = crypto4.createHash("sha256").update(rawToken).digest("hex");
     const expiresAt = new Date(Date.now() + 60 * 60 * 1e3);
     const resetRecord = {
-      id: crypto3.randomUUID(),
+      id: crypto4.randomUUID(),
       email: emailNormalized,
       token_hash: tokenHash,
       expires_at: expiresAt,
@@ -47734,7 +47859,7 @@ var AuthService = class {
     if (!input2.token || input2.token.trim() === "") {
       throw new Error("Invalid or expired password reset token");
     }
-    const tokenHash = crypto3.createHash("sha256").update(input2.token.trim()).digest("hex");
+    const tokenHash = crypto4.createHash("sha256").update(input2.token.trim()).digest("hex");
     let email3 = null;
     let resetId = null;
     if (getPool()) {
@@ -47839,7 +47964,7 @@ var AuthService = class {
     }
     const emailNormalized = input2.email.toLowerCase();
     const passwordHash = await bcryptjs_default.hash(input2.password, 10);
-    const adminId = crypto3.randomUUID();
+    const adminId = crypto4.randomUUID();
     const now = /* @__PURE__ */ new Date();
     const newAdmin = {
       id: adminId,
@@ -47905,133 +48030,714 @@ var AuthService = class {
       }
     };
   }
+  static {
+    // =========================================================================
+    // BROKER BACK OFFICE: OPERATIONS DASHBOARD & CLIENT INSPECTOR METHODS
+    // =========================================================================
+    this.defaultBrokerSettings = {
+      broker_name: "ForexCore Broker",
+      legal_entity_name: "ForexCore Financial Services Ltd",
+      support_email: "support@forexcore.com",
+      contact_phone: "+44 20 7946 0912",
+      default_currency: "USD",
+      default_leverage: "1:100",
+      max_leverage: "1:500",
+      accent_color: "#8b5cf6",
+      allowed_registrations: true,
+      kyc_required_for_withdrawals: true,
+      updated_at: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  }
+  static async getBrokerSettings() {
+    const pool2 = getPool();
+    if (pool2) {
+      try {
+        const rows = await query(
+          `SELECT value, updated_at FROM system_settings WHERE key = 'broker_settings'`
+        );
+        if (rows.length > 0 && rows[0].value) {
+          return {
+            ...this.defaultBrokerSettings,
+            ...rows[0].value,
+            updated_at: rows[0].updated_at ? new Date(rows[0].updated_at).toISOString() : (/* @__PURE__ */ new Date()).toISOString()
+          };
+        }
+      } catch (err) {
+        console.warn("[BROKER_SETTINGS] Notice: Could not read persistent broker settings, using defaults:", err?.message || err);
+      }
+      return { ...this.defaultBrokerSettings };
+    } else {
+      const stored = inMemoryDb.systemSettings.get("broker_settings");
+      if (stored) {
+        return { ...this.defaultBrokerSettings, ...stored };
+      }
+      return { ...this.defaultBrokerSettings };
+    }
+  }
+  static async updateBrokerSettings(newSettings, adminUserId, ip, userAgent) {
+    const currentSettings = await this.getBrokerSettings();
+    const updatedSettings = {
+      ...currentSettings,
+      ...newSettings,
+      updated_at: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    const pool2 = getPool();
+    if (pool2) {
+      await query(
+        `INSERT INTO system_settings (key, value, updated_at)
+         VALUES ('broker_settings', $1, NOW())
+         ON CONFLICT (key) DO UPDATE
+         SET value = EXCLUDED.value, updated_at = NOW()`,
+        [JSON.stringify(updatedSettings)]
+      );
+    } else {
+      inMemoryDb.systemSettings.set("broker_settings", updatedSettings);
+    }
+    await this.recordAuditLog(
+      adminUserId || null,
+      "BROKER_SETTINGS_UPDATED",
+      "system_config",
+      "broker_settings",
+      { updated_fields: Object.keys(newSettings) },
+      ip,
+      userAgent
+    );
+    return updatedSettings;
+  }
+  /**
+   * Retrieve aggregate real KPIs and top urgent attention queues for Broker Back Office
+   */
+  static async getDashboardKpis() {
+    const pool2 = getPool();
+    if (pool2) {
+      const countsResult = await query(
+        `SELECT
+           (SELECT COUNT(*)::int FROM users WHERE LOWER(role) = 'client') AS total_clients,
+           (SELECT COUNT(*)::int FROM users WHERE LOWER(role) = 'client' AND status = 'active') AS active_clients,
+           (SELECT COUNT(*)::int FROM kyc_profiles WHERE status IN ('pending', 'under_review')) AS pending_kyc,
+           (SELECT COUNT(*)::int FROM deposits WHERE status = 'pending') AS pending_deposits,
+           (SELECT COUNT(*)::int FROM withdrawals WHERE status = 'pending') AS pending_withdrawals,
+           (SELECT COUNT(*)::int FROM support_tickets WHERE status IN ('open', 'in_progress')) AS open_support_tickets,
+           (SELECT COUNT(*)::int FROM trading_accounts WHERE status = 'active') AS active_trading_accounts`
+      );
+      const row = countsResult[0] || {};
+      const urgentDeposits = await query(
+        `SELECT d.id, d.reference_no, d.amount, d.currency, d.created_at, d.payment_method_name,
+                u.first_name, u.last_name, u.email
+         FROM deposits d
+         JOIN users u ON u.id = d.user_id
+         WHERE d.status = 'pending'
+         ORDER BY d.created_at ASC LIMIT 5`
+      );
+      const urgentWithdrawals = await query(
+        `SELECT w.id, w.reference_no, w.amount, w.currency, w.created_at, w.payment_method_name,
+                u.first_name, u.last_name, u.email
+         FROM withdrawals w
+         JOIN users u ON u.id = w.user_id
+         WHERE w.status = 'pending'
+         ORDER BY w.created_at ASC LIMIT 5`
+      );
+      const urgentKyc = await query(
+        `SELECT kp.id, kp.user_id, kp.first_name, kp.last_name, kp.status, kp.submitted_at,
+                u.email, u.country
+         FROM kyc_profiles kp
+         JOIN users u ON u.id = kp.user_id
+         WHERE kp.status IN ('pending', 'under_review')
+         ORDER BY kp.submitted_at ASC LIMIT 5`
+      );
+      return {
+        kpis: {
+          total_clients: Number(row.total_clients) || 0,
+          active_clients: Number(row.active_clients) || 0,
+          pending_kyc: Number(row.pending_kyc) || 0,
+          pending_deposits: Number(row.pending_deposits) || 0,
+          pending_withdrawals: Number(row.pending_withdrawals) || 0,
+          open_support_tickets: Number(row.open_support_tickets) || 0,
+          active_trading_accounts: Number(row.active_trading_accounts) || 0
+        },
+        urgent: {
+          deposits: urgentDeposits,
+          withdrawals: urgentWithdrawals,
+          kyc: urgentKyc
+        }
+      };
+    } else {
+      const allClients = Array.from(inMemoryDb.users.values()).filter(
+        (u) => (u.role || "").toLowerCase() === "client"
+      );
+      const activeClients = allClients.filter((u) => u.status === "active");
+      const pendingKyc = Array.from(inMemoryDb.kycProfiles.values()).filter(
+        (kp) => kp.status === "pending" || kp.status === "under_review"
+      );
+      const pendingDeposits = Array.from(inMemoryDb.deposits.values()).filter((d5) => d5.status === "pending");
+      const pendingWithdrawals = Array.from(inMemoryDb.withdrawals.values()).filter((w) => w.status === "pending");
+      const openSupportTickets = Array.from(inMemoryDb.supportTickets.values()).filter(
+        (st) => st.status === "open" || st.status === "in_progress"
+      );
+      const activeTradingAccounts = Array.from(inMemoryDb.tradingAccounts.values()).filter(
+        (ta) => ta.status === "active"
+      );
+      const urgentDeposits = pendingDeposits.slice(0, 5).map((d5) => {
+        const u = Array.from(inMemoryDb.users.values()).find((usr) => usr.id === d5.user_id);
+        return {
+          id: d5.id,
+          reference_no: d5.reference_no,
+          amount: d5.amount,
+          currency: d5.currency,
+          created_at: d5.created_at,
+          payment_method_name: d5.payment_method_name,
+          first_name: u?.first_name || "Client",
+          last_name: u?.last_name || "",
+          email: u?.email || ""
+        };
+      });
+      const urgentWithdrawals = pendingWithdrawals.slice(0, 5).map((w) => {
+        const u = Array.from(inMemoryDb.users.values()).find((usr) => usr.id === w.user_id);
+        return {
+          id: w.id,
+          reference_no: w.reference_no,
+          amount: w.amount,
+          currency: w.currency,
+          created_at: w.created_at,
+          payment_method_name: w.payment_method_name,
+          first_name: u?.first_name || "Client",
+          last_name: u?.last_name || "",
+          email: u?.email || ""
+        };
+      });
+      const urgentKycList = pendingKyc.slice(0, 5).map((kp) => {
+        const u = Array.from(inMemoryDb.users.values()).find((usr) => usr.id === kp.user_id);
+        return {
+          id: kp.id,
+          user_id: kp.user_id,
+          first_name: kp.first_name,
+          last_name: kp.last_name,
+          status: kp.status,
+          submitted_at: kp.submitted_at,
+          email: u?.email || "",
+          country: kp.country || u?.country || ""
+        };
+      });
+      return {
+        kpis: {
+          total_clients: allClients.length,
+          active_clients: activeClients.length,
+          pending_kyc: pendingKyc.length,
+          pending_deposits: pendingDeposits.length,
+          pending_withdrawals: pendingWithdrawals.length,
+          open_support_tickets: openSupportTickets.length,
+          active_trading_accounts: activeTradingAccounts.length
+        },
+        urgent: {
+          deposits: urgentDeposits,
+          withdrawals: urgentWithdrawals,
+          kyc: urgentKycList
+        }
+      };
+    }
+  }
+  /**
+   * List all registered client users with their KYC status, primary wallet, and trading account totals
+   */
+  static async listClients(filter) {
+    const pool2 = getPool();
+    let clients = [];
+    if (pool2) {
+      const rows = await query(
+        `SELECT
+           u.id, u.email, u.first_name, u.last_name, u.country, u.phone,
+           u.preferred_currency, u.status, u.created_at, u.last_login_at,
+           kp.status AS kyc_status,
+           w.balance AS wallet_balance,
+           w.reserved_balance AS wallet_reserved_balance,
+           (SELECT COUNT(*)::int FROM trading_accounts ta WHERE ta.user_id = u.id) AS trading_accounts_count
+         FROM users u
+         LEFT JOIN kyc_profiles kp ON kp.user_id = u.id
+         LEFT JOIN wallets w ON w.user_id = u.id
+         WHERE LOWER(u.role) = 'client'
+         ORDER BY u.created_at DESC`
+      );
+      clients = rows.map((r5) => ({
+        id: r5.id,
+        email: r5.email,
+        first_name: r5.first_name,
+        last_name: r5.last_name,
+        country: r5.country,
+        phone: r5.phone || null,
+        preferred_currency: r5.preferred_currency,
+        status: r5.status,
+        kyc_status: r5.kyc_status || "unsubmitted",
+        wallet_balance: r5.wallet_balance || "0.00",
+        wallet_reserved_balance: r5.wallet_reserved_balance || "0.00",
+        trading_accounts_count: Number(r5.trading_accounts_count) || 0,
+        created_at: r5.created_at,
+        last_login_at: r5.last_login_at
+      }));
+    } else {
+      const usersList = Array.from(inMemoryDb.users.values()).filter(
+        (u) => (u.role || "").toLowerCase() === "client"
+      );
+      clients = usersList.map((c5) => {
+        const kyc = Array.from(inMemoryDb.kycProfiles.values()).find((kp) => kp.user_id === c5.id);
+        const wallet = Array.from(inMemoryDb.wallets.values()).find((w) => w.user_id === c5.id);
+        const accountCount = Array.from(inMemoryDb.tradingAccounts.values()).filter(
+          (ta) => ta.user_id === c5.id
+        ).length;
+        return {
+          id: c5.id,
+          email: c5.email,
+          first_name: c5.first_name,
+          last_name: c5.last_name,
+          country: c5.country,
+          phone: c5.phone || null,
+          preferred_currency: c5.preferred_currency,
+          status: c5.status,
+          kyc_status: kyc ? kyc.status : "unsubmitted",
+          wallet_balance: wallet ? wallet.balance : "0.00",
+          wallet_reserved_balance: wallet ? wallet.reserved_balance : "0.00",
+          trading_accounts_count: accountCount,
+          created_at: c5.created_at,
+          last_login_at: c5.last_login_at
+        };
+      });
+    }
+    if (filter) {
+      if (filter.search && filter.search.trim() !== "") {
+        const q3 = filter.search.trim().toLowerCase();
+        clients = clients.filter(
+          (c5) => c5.id.toLowerCase().includes(q3) || c5.email.toLowerCase().includes(q3) || c5.first_name.toLowerCase().includes(q3) || c5.last_name.toLowerCase().includes(q3)
+        );
+      }
+      if (filter.status && filter.status !== "all") {
+        clients = clients.filter((c5) => c5.status === filter.status);
+      }
+      if (filter.kycStatus && filter.kycStatus !== "all") {
+        clients = clients.filter((c5) => c5.kyc_status === filter.kycStatus);
+      }
+    }
+    return clients;
+  }
+  /**
+   * 360° Client Inspector Profile
+   * Comprehensive operational view combining identity, KYC, wallet, accounts, transactions, and tickets.
+   */
+  static async getClient360(clientId) {
+    const pool2 = getPool();
+    if (pool2) {
+      const userRows = await query(
+        `SELECT id, email, first_name, last_name, country, phone, preferred_currency, status, created_at, updated_at, last_login_at
+         FROM users WHERE id = $1 AND LOWER(role) = 'client'`,
+        [clientId]
+      );
+      if (userRows.length === 0) throw new Error("Client account not found");
+      const client = userRows[0];
+      const walletRows = await query(
+        `SELECT id, currency, balance, reserved_balance, created_at, updated_at FROM wallets WHERE user_id = $1`,
+        [clientId]
+      );
+      const wallet = walletRows[0] || {
+        id: null,
+        currency: client.preferred_currency,
+        balance: "0.00",
+        reserved_balance: "0.00"
+      };
+      const tradingAccounts = await query(
+        `SELECT id, account_number, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, group_tier, created_at
+         FROM trading_accounts WHERE user_id = $1 ORDER BY created_at DESC`,
+        [clientId]
+      );
+      const kycProfileRows = await query(
+        `SELECT * FROM kyc_profiles WHERE user_id = $1`,
+        [clientId]
+      );
+      const kycProfile = kycProfileRows[0] || null;
+      const kycDocs = await query(
+        `SELECT id, document_type, original_filename, file_size, mime_type, status, rejection_reason, created_at
+         FROM kyc_documents WHERE user_id = $1 ORDER BY created_at DESC`,
+        [clientId]
+      );
+      const deposits = await query(
+        `SELECT id, reference_no, amount, currency, status, payment_method_name, created_at, approved_at, rejected_at, rejection_reason
+         FROM deposits WHERE user_id = $1 ORDER BY created_at DESC LIMIT 10`,
+        [clientId]
+      );
+      const withdrawals = await query(
+        `SELECT id, reference_no, amount, currency, status, payment_method_name, created_at, approved_at, rejected_at, rejection_reason
+         FROM withdrawals WHERE user_id = $1 ORDER BY created_at DESC LIMIT 10`,
+        [clientId]
+      );
+      const supportTickets = await query(
+        `SELECT id, ticket_no, subject, category, priority, status, created_at, last_reply_at
+         FROM support_tickets WHERE user_id = $1 ORDER BY created_at DESC LIMIT 10`,
+        [clientId]
+      );
+      const auditLogs = await query(
+        `SELECT id, action, entity_type, entity_id, details, created_at
+         FROM audit_logs WHERE (entity_type = 'user' AND entity_id = $1) OR actor_id = $1
+         ORDER BY created_at DESC LIMIT 10`,
+        [clientId]
+      );
+      return {
+        client,
+        wallet,
+        trading_accounts: tradingAccounts,
+        kyc_profile: kycProfile,
+        kyc_documents: kycDocs,
+        recent_deposits: deposits,
+        recent_withdrawals: withdrawals,
+        support_tickets: supportTickets,
+        audit_logs: auditLogs
+      };
+    } else {
+      const client = Array.from(inMemoryDb.users.values()).find(
+        (u) => u.id === clientId && (u.role || "").toLowerCase() === "client"
+      );
+      if (!client) throw new Error("Client account not found");
+      const wallet = Array.from(inMemoryDb.wallets.values()).find((w) => w.user_id === clientId) || {
+        id: null,
+        currency: client.preferred_currency,
+        balance: "0.00",
+        reserved_balance: "0.00"
+      };
+      const tradingAccounts = Array.from(inMemoryDb.tradingAccounts.values()).filter((ta) => ta.user_id === clientId).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime());
+      const kycProfile = Array.from(inMemoryDb.kycProfiles.values()).find((kp) => kp.user_id === clientId) || null;
+      const kycDocs = Array.from(inMemoryDb.kycDocuments.values()).filter((kd) => kd.user_id === clientId).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime());
+      const deposits = Array.from(inMemoryDb.deposits.values()).filter((d5) => d5.user_id === clientId).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime()).slice(0, 10);
+      const withdrawals = Array.from(inMemoryDb.withdrawals.values()).filter((w) => w.user_id === clientId).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime()).slice(0, 10);
+      const supportTickets = Array.from(inMemoryDb.supportTickets.values()).filter((st) => st.user_id === clientId).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime()).slice(0, 10);
+      const auditLogs = inMemoryDb.auditLogs.filter((al) => al.entity_type === "user" && al.entity_id === clientId || al.actor_id === clientId).slice(0, 10);
+      return {
+        client: {
+          id: client.id,
+          email: client.email,
+          first_name: client.first_name,
+          last_name: client.last_name,
+          country: client.country,
+          phone: client.phone || null,
+          preferred_currency: client.preferred_currency,
+          status: client.status,
+          created_at: client.created_at,
+          updated_at: client.updated_at,
+          last_login_at: client.last_login_at
+        },
+        wallet,
+        trading_accounts: tradingAccounts,
+        kyc_profile: kycProfile,
+        kyc_documents: kycDocs,
+        recent_deposits: deposits,
+        recent_withdrawals: withdrawals,
+        support_tickets: supportTickets,
+        audit_logs: auditLogs
+      };
+    }
+  }
+  /**
+   * Admin updates client status (active, suspended, pending) with mandatory audit logging and client notification
+   */
+  static async updateClientStatus(adminUserId, clientId, status, reason, ip, userAgent) {
+    const pool2 = getPool();
+    let previousStatus = "unknown";
+    if (pool2) {
+      const existing = await query("SELECT status FROM users WHERE id = $1 AND LOWER(role) = $2", [
+        clientId,
+        "client"
+      ]);
+      if (existing.length === 0) throw new Error("Client account not found");
+      previousStatus = existing[0].status;
+      await query("UPDATE users SET status = $1, updated_at = NOW() WHERE id = $2 AND LOWER(role) = $3", [
+        status,
+        clientId,
+        "client"
+      ]);
+    } else {
+      const u = Array.from(inMemoryDb.users.values()).find(
+        (usr) => usr.id === clientId && (usr.role || "").toLowerCase() === "client"
+      );
+      if (!u) throw new Error("Client account not found");
+      previousStatus = u.status;
+      u.status = status;
+      u.updated_at = /* @__PURE__ */ new Date();
+    }
+    await this.recordAuditLog(
+      adminUserId,
+      "CLIENT_STATUS_UPDATED",
+      "user",
+      clientId,
+      {
+        previous_status: previousStatus,
+        new_status: status,
+        reason: reason || "Administrative action"
+      },
+      ip,
+      userAgent
+    );
+    await NotificationService.createNotification(
+      clientId,
+      "Account Status Updated",
+      `Your account status has been updated to ${status.toUpperCase()}.${reason ? ` Reason: ${reason}` : ""}`,
+      "system",
+      { previous_status: previousStatus, new_status: status, reason }
+    );
+    return { success: true, clientId, status, previousStatus };
+  }
+  /**
+   * Broadcast notification to all clients or send to a specific client
+   */
+  static async broadcastNotification(adminUserId, input2, ip, userAgent) {
+    const title = input2.title?.trim();
+    const message = input2.message?.trim();
+    if (!title || !message) throw new Error("Title and message are required");
+    let dispatchCount = 0;
+    const notificationType = input2.type || "system";
+    if (input2.target === "specific_user") {
+      if (!input2.user_id) throw new Error("user_id is required for specific user target");
+      await NotificationService.createNotification(
+        input2.user_id,
+        title,
+        message,
+        notificationType,
+        { broadcast_by: adminUserId }
+      );
+      dispatchCount = 1;
+    } else {
+      const clients = await this.listClients();
+      for (const client of clients) {
+        await NotificationService.createNotification(
+          client.id,
+          title,
+          message,
+          notificationType,
+          { broadcast_by: adminUserId }
+        );
+        dispatchCount++;
+      }
+    }
+    await this.recordAuditLog(
+      adminUserId,
+      "NOTIFICATION_BROADCAST_SENT",
+      "notification",
+      null,
+      {
+        title,
+        target: input2.target,
+        user_id: input2.user_id || null,
+        dispatch_count: dispatchCount
+      },
+      ip,
+      userAgent
+    );
+    return { success: true, dispatch_count: dispatchCount };
+  }
+  /**
+   * =========================================================================
+   * STAFF ADMINISTRATOR MANAGEMENT (Strict 2-Tier: client, admin)
+   * =========================================================================
+   */
+  /**
+   * List all staff administrators
+   */
+  static async listStaffAdmins() {
+    const pool2 = getPool();
+    if (pool2) {
+      const rows = await query(
+        `SELECT id, email, first_name, last_name, role, status, created_at, updated_at, last_login_at
+         FROM users
+         WHERE LOWER(role) = 'admin'
+         ORDER BY created_at ASC`
+      );
+      return rows.map((r5) => ({
+        id: r5.id,
+        email: r5.email,
+        first_name: r5.first_name,
+        last_name: r5.last_name,
+        role: "admin",
+        status: r5.status,
+        created_at: r5.created_at,
+        updated_at: r5.updated_at,
+        last_login_at: r5.last_login_at
+      }));
+    } else {
+      const admins = Array.from(inMemoryDb.users.values()).filter(
+        (u) => (u.role || "").toLowerCase() === "admin"
+      );
+      return admins.map((a5) => ({
+        id: a5.id,
+        email: a5.email,
+        first_name: a5.first_name,
+        last_name: a5.last_name,
+        role: "admin",
+        status: a5.status,
+        created_at: a5.created_at,
+        updated_at: a5.updated_at,
+        last_login_at: a5.last_login_at
+      }));
+    }
+  }
+  /**
+   * Provision a new staff administrator by an authenticated admin
+   */
+  static async createStaffAdmin(actorAdminId, payload, ip, userAgent) {
+    const emailNormalized = payload.email.trim().toLowerCase();
+    if (!emailNormalized || !payload.password) {
+      throw new Error("Email and password are required");
+    }
+    if (payload.password.length < 8) {
+      throw new Error("Password must be at least 8 characters long");
+    }
+    const pool2 = getPool();
+    if (pool2) {
+      const existing = await query("SELECT id FROM users WHERE email = $1", [emailNormalized]);
+      if (existing.length > 0) {
+        throw new Error("A user with this email already exists");
+      }
+    } else {
+      const existing = Array.from(inMemoryDb.users.values()).some(
+        (u) => u.email.toLowerCase() === emailNormalized
+      );
+      if (existing) {
+        throw new Error("A user with this email already exists");
+      }
+    }
+    const salt = await bcryptjs_default.genSalt(10);
+    const passwordHash = await bcryptjs_default.hash(payload.password, salt);
+    const newAdminId = crypto4.randomUUID();
+    const now = /* @__PURE__ */ new Date();
+    if (pool2) {
+      await query(
+        `INSERT INTO users (
+          id, email, password_hash, role, status, first_name, last_name, country, preferred_currency, email_verified_at, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [
+          newAdminId,
+          emailNormalized,
+          passwordHash,
+          "admin",
+          "active",
+          payload.first_name || "Staff",
+          payload.last_name || "Admin",
+          "US",
+          "USD",
+          now,
+          now,
+          now
+        ]
+      );
+    } else {
+      const newAdmin = {
+        id: newAdminId,
+        email: emailNormalized,
+        password_hash: passwordHash,
+        role: "admin",
+        status: "active",
+        first_name: payload.first_name || "Staff",
+        last_name: payload.last_name || "Admin",
+        country: "US",
+        preferred_currency: "USD",
+        email_verified_at: now,
+        created_at: now,
+        updated_at: now
+      };
+      inMemoryDb.users.set(newAdminId, newAdmin);
+    }
+    await this.recordAuditLog(
+      actorAdminId,
+      "STAFF_ADMIN_PROVISIONED",
+      "user",
+      newAdminId,
+      {
+        email: emailNormalized,
+        first_name: payload.first_name,
+        last_name: payload.last_name,
+        provisioned_by: actorAdminId
+      },
+      ip,
+      userAgent
+    );
+    return {
+      id: newAdminId,
+      email: emailNormalized,
+      first_name: payload.first_name,
+      last_name: payload.last_name,
+      role: "admin",
+      status: "active",
+      created_at: now
+    };
+  }
+  /**
+   * Activate or deactivate staff admin status
+   */
+  static async setStaffAdminStatus(actorAdminId, targetAdminId, status, reason, ip, userAgent) {
+    if (actorAdminId === targetAdminId && status === "suspended") {
+      throw new Error("Administrators cannot deactivate their own account.");
+    }
+    const pool2 = getPool();
+    let prevStatus = "unknown";
+    if (pool2) {
+      const rows = await query(
+        `SELECT id, email, status FROM users WHERE id = $1 AND LOWER(role) = 'admin'`,
+        [targetAdminId]
+      );
+      if (rows.length === 0) {
+        throw new Error("Staff administrator account not found");
+      }
+      prevStatus = rows[0].status;
+      if (status === "suspended") {
+        const activeCountRows = await query(
+          `SELECT COUNT(*)::int as count FROM users WHERE LOWER(role) = 'admin' AND status = 'active'`
+        );
+        const count = activeCountRows[0]?.count || 0;
+        if (count <= 1 && prevStatus === "active") {
+          throw new Error("Cannot deactivate the sole remaining active administrator");
+        }
+      }
+      await query(`UPDATE users SET status = $1, updated_at = NOW() WHERE id = $2 AND LOWER(role) = 'admin'`, [
+        status,
+        targetAdminId
+      ]);
+    } else {
+      const target = Array.from(inMemoryDb.users.values()).find(
+        (u) => u.id === targetAdminId && (u.role || "").toLowerCase() === "admin"
+      );
+      if (!target) {
+        throw new Error("Staff administrator account not found");
+      }
+      prevStatus = target.status;
+      if (status === "suspended") {
+        const activeCount = Array.from(inMemoryDb.users.values()).filter(
+          (u) => (u.role || "").toLowerCase() === "admin" && u.status === "active"
+        ).length;
+        if (activeCount <= 1 && prevStatus === "active") {
+          throw new Error("Cannot deactivate the sole remaining active administrator");
+        }
+      }
+      target.status = status;
+      target.updated_at = /* @__PURE__ */ new Date();
+    }
+    await this.recordAuditLog(
+      actorAdminId,
+      status === "suspended" ? "STAFF_ADMIN_DEACTIVATED" : "STAFF_ADMIN_ACTIVATED",
+      "user",
+      targetAdminId,
+      {
+        previous_status: prevStatus,
+        new_status: status,
+        reason: reason || "Administrative governance decision",
+        performed_by: actorAdminId
+      },
+      ip,
+      userAgent
+    );
+    return {
+      success: true,
+      targetAdminId,
+      status,
+      previousStatus: prevStatus
+    };
+  }
 };
 
 // netlify/functions/services/financial.service.ts
 import crypto5 from "crypto";
-
-// netlify/functions/services/notification.service.ts
-import crypto4 from "crypto";
-var NotificationService = class {
-  /**
-   * Creates a notification for a user in response to a real CRM event
-   */
-  static async createNotification(userId, title, message, type, data = {}) {
-    const pool2 = getPool();
-    const notificationId = crypto4.randomUUID();
-    const now = /* @__PURE__ */ new Date();
-    const record2 = {
-      id: notificationId,
-      user_id: userId,
-      title,
-      message,
-      type,
-      data,
-      is_read: false,
-      read_at: null,
-      created_at: now
-    };
-    if (pool2) {
-      await query(
-        `INSERT INTO notifications (id, user_id, title, message, type, data, is_read, read_at, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [
-          record2.id,
-          record2.user_id,
-          record2.title,
-          record2.message,
-          record2.type,
-          JSON.stringify(record2.data),
-          record2.is_read,
-          record2.read_at,
-          record2.created_at
-        ]
-      );
-    } else {
-      inMemoryDb.notifications.unshift(record2);
-    }
-    return record2;
-  }
-  /**
-   * Fetches user notifications with pagination
-   */
-  static async getUserNotifications(userId, limit = 20, offset = 0) {
-    const pool2 = getPool();
-    if (pool2) {
-      const rows = await query(
-        `SELECT * FROM notifications
-         WHERE user_id = $1
-         ORDER BY created_at DESC
-         LIMIT $2 OFFSET $3`,
-        [userId, limit, offset]
-      );
-      const unreadRows = await query(
-        `SELECT COUNT(*) as count FROM notifications
-         WHERE user_id = $1 AND is_read = false`,
-        [userId]
-      );
-      const unreadCount = parseInt(unreadRows[0]?.count || "0", 10);
-      return { notifications: rows, unreadCount };
-    } else {
-      const userNotifs = inMemoryDb.notifications.filter((n3) => n3.user_id === userId);
-      const unreadCount = userNotifs.filter((n3) => !n3.is_read).length;
-      const paginated = userNotifs.slice(offset, offset + limit);
-      return { notifications: paginated, unreadCount };
-    }
-  }
-  /**
-   * Marks a specific notification as read (with user ID authorization check)
-   */
-  static async markAsRead(notificationId, userId) {
-    const pool2 = getPool();
-    const now = /* @__PURE__ */ new Date();
-    if (pool2) {
-      const res = await query(
-        `UPDATE notifications
-         SET is_read = true, read_at = $1
-         WHERE id = $2 AND user_id = $3
-         RETURNING id`,
-        [now, notificationId, userId]
-      );
-      return res.length > 0;
-    } else {
-      const notif = inMemoryDb.notifications.find((n3) => n3.id === notificationId && n3.user_id === userId);
-      if (!notif) {
-        return false;
-      }
-      notif.is_read = true;
-      notif.read_at = now;
-      return true;
-    }
-  }
-  /**
-   * Marks all notifications as read for a user
-   */
-  static async markAllAsRead(userId) {
-    const pool2 = getPool();
-    const now = /* @__PURE__ */ new Date();
-    if (pool2) {
-      const res = await query(
-        `UPDATE notifications
-         SET is_read = true, read_at = $1
-         WHERE user_id = $2 AND is_read = false
-         RETURNING id`,
-        [now, userId]
-      );
-      return res.length;
-    } else {
-      let count = 0;
-      for (const notif of inMemoryDb.notifications) {
-        if (notif.user_id === userId && !notif.is_read) {
-          notif.is_read = true;
-          notif.read_at = now;
-          count++;
-        }
-      }
-      return count;
-    }
-  }
-};
 
 // node_modules/decimal.js/decimal.mjs
 var EXP_LIMIT = 9e15;
@@ -73368,6 +74074,28 @@ var handler = async (event, context) => {
       };
     }
     DatabaseGuard.assertDatabaseConfigured();
+    if ((path2 === "/broker/branding" || path2 === "/broker-branding") && event.httpMethod === "GET") {
+      const settings = await AuthService.getBrokerSettings();
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          status: "success",
+          data: {
+            broker_name: settings.broker_name || "ForexCore Broker",
+            legal_entity_name: settings.legal_entity_name || "ForexCore Financial Services Ltd",
+            support_email: settings.support_email || "support@forexcore.com",
+            contact_phone: settings.contact_phone || "+44 20 7946 0912",
+            default_currency: settings.default_currency || "USD",
+            default_leverage: settings.default_leverage || "1:100",
+            max_leverage: settings.max_leverage || "1:500",
+            accent_color: settings.accent_color || "#8b5cf6",
+            allowed_registrations: settings.allowed_registrations !== false,
+            kyc_required_for_withdrawals: settings.kyc_required_for_withdrawals !== false
+          }
+        })
+      };
+    }
     if (path2 === "/auth/admin-status" && event.httpMethod === "GET") {
       const hasAdmin = await AuthService.hasAdmin();
       return {
@@ -73524,6 +74252,259 @@ var handler = async (event, context) => {
         statusCode: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
         body: JSON.stringify({ status: "success", message: "Admin access verified." })
+      };
+    }
+    if (path2 === "/admin/dashboard/kpis" && event.httpMethod === "GET") {
+      const authHeader2 = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader2);
+      if (!user) {
+        return {
+          statusCode: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "error", message: "Unauthorized." })
+        };
+      }
+      if (user.role !== "admin") {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "error", message: "Forbidden. Admin credentials required." })
+        };
+      }
+      const data = await AuthService.getDashboardKpis();
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "success", data })
+      };
+    }
+    if (path2 === "/admin/clients" && event.httpMethod === "GET") {
+      const authHeader2 = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader2);
+      if (!user) {
+        return {
+          statusCode: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "error", message: "Unauthorized." })
+        };
+      }
+      if (user.role !== "admin") {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "error", message: "Forbidden. Admin credentials required." })
+        };
+      }
+      const search = event.queryStringParameters?.search;
+      const status = event.queryStringParameters?.status;
+      const kycStatus = event.queryStringParameters?.kycStatus;
+      const clients = await AuthService.listClients({ search, status, kycStatus });
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "success", data: clients })
+      };
+    }
+    const clientMatch = path2.match(/^\/admin\/clients\/([^/]+)(\/360)?$/);
+    if (clientMatch && event.httpMethod === "GET") {
+      const authHeader2 = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader2);
+      if (!user) {
+        return {
+          statusCode: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "error", message: "Unauthorized." })
+        };
+      }
+      if (user.role !== "admin") {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "error", message: "Forbidden. Admin credentials required." })
+        };
+      }
+      const clientId = clientMatch[1];
+      const profile = await AuthService.getClient360(clientId);
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "success", data: profile })
+      };
+    }
+    const clientStatusMatch = path2.match(/^\/admin\/clients\/([^/]+)\/status$/);
+    if (clientStatusMatch && event.httpMethod === "PATCH") {
+      const authHeader2 = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader2);
+      if (!user) {
+        return {
+          statusCode: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "error", message: "Unauthorized." })
+        };
+      }
+      if (user.role !== "admin") {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "error", message: "Forbidden. Admin credentials required." })
+        };
+      }
+      const clientId = clientStatusMatch[1];
+      const body = parseRequestBody(event.body);
+      const targetStatus = body.status;
+      if (!targetStatus || !["active", "suspended", "pending"].includes(targetStatus)) {
+        return {
+          statusCode: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "error", message: "Invalid status. Must be active, suspended, or pending." })
+        };
+      }
+      const res = await AuthService.updateClientStatus(
+        user.id,
+        clientId,
+        targetStatus,
+        body.reason,
+        clientIp,
+        userAgent
+      );
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "success", data: res })
+      };
+    }
+    if (path2 === "/admin/notifications/broadcast" && event.httpMethod === "POST") {
+      const authHeader2 = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader2);
+      if (!user || user.role !== "admin") {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "error", message: "Admin access required." })
+        };
+      }
+      const body = parseRequestBody(event.body);
+      const res = await AuthService.broadcastNotification(
+        user.id,
+        {
+          title: body.title,
+          message: body.message,
+          type: body.type || "system",
+          target: body.target || "all",
+          user_id: body.user_id
+        },
+        clientIp,
+        userAgent
+      );
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "success", data: res })
+      };
+    }
+    if (path2 === "/admin/broker-settings" && event.httpMethod === "GET") {
+      const authHeader2 = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader2);
+      if (!user || user.role !== "admin") {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "error", message: "Admin access required." })
+        };
+      }
+      const settings = await AuthService.getBrokerSettings();
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "success", data: settings })
+      };
+    }
+    if (path2 === "/admin/broker-settings" && event.httpMethod === "POST") {
+      const authHeader2 = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader2);
+      if (!user || user.role !== "admin") {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "error", message: "Admin access required." })
+        };
+      }
+      const body = parseRequestBody(event.body);
+      const updated = await AuthService.updateBrokerSettings(body, user.id, clientIp, userAgent);
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "success", data: updated })
+      };
+    }
+    if (path2 === "/admin/staff" && event.httpMethod === "GET") {
+      const authHeader2 = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader2);
+      if (!user || user.role !== "admin") {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "error", message: "Admin access required." })
+        };
+      }
+      const admins = await AuthService.listStaffAdmins();
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "success", data: admins })
+      };
+    }
+    if (path2 === "/admin/staff" && event.httpMethod === "POST") {
+      const authHeader2 = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader2);
+      if (!user || user.role !== "admin") {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "error", message: "Admin access required." })
+        };
+      }
+      const body = parseRequestBody(event.body);
+      const newAdmin = await AuthService.createStaffAdmin(
+        user.id,
+        {
+          email: body.email,
+          password: body.password,
+          first_name: body.first_name,
+          last_name: body.last_name
+        },
+        clientIp,
+        userAgent
+      );
+      return {
+        statusCode: 201,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "success", data: newAdmin })
+      };
+    }
+    if (path2 === "/admin/staff/status" && event.httpMethod === "POST") {
+      const authHeader2 = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader2);
+      if (!user || user.role !== "admin") {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "error", message: "Admin access required." })
+        };
+      }
+      const body = parseRequestBody(event.body);
+      const result = await AuthService.setStaffAdminStatus(
+        user.id,
+        body.admin_id,
+        body.status,
+        body.reason,
+        clientIp,
+        userAgent
+      );
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "success", data: result })
       };
     }
     if (path2 === "/financial/payment-methods" && event.httpMethod === "GET") {

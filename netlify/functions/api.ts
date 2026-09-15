@@ -105,6 +105,32 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
     DatabaseGuard.assertDatabaseConfigured();
 
     // -------------------------------------------------------------------------
+    // GET /api/broker/branding (Public Broker Dynamic Branding Configuration)
+    // -------------------------------------------------------------------------
+    if ((path === '/broker/branding' || path === '/broker-branding') && event.httpMethod === 'GET') {
+      const settings = await AuthService.getBrokerSettings();
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'success',
+          data: {
+            broker_name: settings.broker_name || 'ForexCore Broker',
+            legal_entity_name: settings.legal_entity_name || 'ForexCore Financial Services Ltd',
+            support_email: settings.support_email || 'support@forexcore.com',
+            contact_phone: settings.contact_phone || '+44 20 7946 0912',
+            default_currency: settings.default_currency || 'USD',
+            default_leverage: settings.default_leverage || '1:100',
+            max_leverage: settings.max_leverage || '1:500',
+            accent_color: settings.accent_color || '#8b5cf6',
+            allowed_registrations: settings.allowed_registrations !== false,
+            kyc_required_for_withdrawals: settings.kyc_required_for_withdrawals !== false,
+          },
+        }),
+      };
+    }
+
+    // -------------------------------------------------------------------------
     // GET /api/auth/admin-status (Check if initial administrator is initialized)
     // -------------------------------------------------------------------------
     if (path === '/auth/admin-status' && event.httpMethod === 'GET') {
@@ -298,6 +324,289 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
         statusCode: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'success', message: 'Admin access verified.' }),
+      };
+    }
+
+    // =========================================================================
+    // BROKER BACK OFFICE: CORE OPERATIONS & CLIENT 360 ROUTES
+    // =========================================================================
+
+    // GET /api/admin/dashboard/kpis (Core operational aggregate KPIs & urgent queues)
+    if (path === '/admin/dashboard/kpis' && event.httpMethod === 'GET') {
+      const authHeader = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader);
+      if (!user) {
+        return {
+          statusCode: 401,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'error', message: 'Unauthorized.' }),
+        };
+      }
+      if (user.role !== 'admin') {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'error', message: 'Forbidden. Admin credentials required.' }),
+        };
+      }
+      const data = await AuthService.getDashboardKpis();
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'success', data }),
+      };
+    }
+
+    // GET /api/admin/clients (Client Directory)
+    if (path === '/admin/clients' && event.httpMethod === 'GET') {
+      const authHeader = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader);
+      if (!user) {
+        return {
+          statusCode: 401,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'error', message: 'Unauthorized.' }),
+        };
+      }
+      if (user.role !== 'admin') {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'error', message: 'Forbidden. Admin credentials required.' }),
+        };
+      }
+      const search = event.queryStringParameters?.search as string | undefined;
+      const status = event.queryStringParameters?.status as string | undefined;
+      const kycStatus = event.queryStringParameters?.kycStatus as string | undefined;
+      const clients = await AuthService.listClients({ search, status, kycStatus });
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'success', data: clients }),
+      };
+    }
+
+    // GET /api/admin/clients/:id/360 or /api/admin/clients/:id
+    const clientMatch = path.match(/^\/admin\/clients\/([^/]+)(\/360)?$/);
+    if (clientMatch && event.httpMethod === 'GET') {
+      const authHeader = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader);
+      if (!user) {
+        return {
+          statusCode: 401,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'error', message: 'Unauthorized.' }),
+        };
+      }
+      if (user.role !== 'admin') {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'error', message: 'Forbidden. Admin credentials required.' }),
+        };
+      }
+      const clientId = clientMatch[1];
+      const profile = await AuthService.getClient360(clientId);
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'success', data: profile }),
+      };
+    }
+
+    // PATCH /api/admin/clients/:id/status (Suspend / Reactivate Client)
+    const clientStatusMatch = path.match(/^\/admin\/clients\/([^/]+)\/status$/);
+    if (clientStatusMatch && event.httpMethod === 'PATCH') {
+      const authHeader = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader);
+      if (!user) {
+        return {
+          statusCode: 401,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'error', message: 'Unauthorized.' }),
+        };
+      }
+      if (user.role !== 'admin') {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'error', message: 'Forbidden. Admin credentials required.' }),
+        };
+      }
+      const clientId = clientStatusMatch[1];
+      const body = parseRequestBody(event.body);
+      const targetStatus = body.status;
+      if (!targetStatus || !['active', 'suspended', 'pending'].includes(targetStatus)) {
+        return {
+          statusCode: 400,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'error', message: 'Invalid status. Must be active, suspended, or pending.' }),
+        };
+      }
+      const res = await AuthService.updateClientStatus(
+        user.id,
+        clientId,
+        targetStatus,
+        body.reason,
+        clientIp,
+        userAgent
+      );
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'success', data: res }),
+      };
+    }
+
+    // POST /api/admin/notifications/broadcast
+    if (path === '/admin/notifications/broadcast' && event.httpMethod === 'POST') {
+      const authHeader = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader);
+      if (!user || user.role !== 'admin') {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'error', message: 'Admin access required.' }),
+        };
+      }
+      const body = parseRequestBody(event.body);
+      const res = await AuthService.broadcastNotification(
+        user.id,
+        {
+          title: body.title,
+          message: body.message,
+          type: body.type || 'system',
+          target: body.target || 'all',
+          user_id: body.user_id,
+        },
+        clientIp,
+        userAgent
+      );
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'success', data: res }),
+      };
+    }
+
+    // GET /api/admin/broker-settings
+    if (path === '/admin/broker-settings' && event.httpMethod === 'GET') {
+      const authHeader = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader);
+      if (!user || user.role !== 'admin') {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'error', message: 'Admin access required.' }),
+        };
+      }
+      const settings = await AuthService.getBrokerSettings();
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'success', data: settings }),
+      };
+    }
+
+    // POST /api/admin/broker-settings
+    if (path === '/admin/broker-settings' && event.httpMethod === 'POST') {
+      const authHeader = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader);
+      if (!user || user.role !== 'admin') {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'error', message: 'Admin access required.' }),
+        };
+      }
+      const body = parseRequestBody(event.body);
+      const updated = await AuthService.updateBrokerSettings(body, user.id, clientIp, userAgent);
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'success', data: updated }),
+      };
+    }
+
+    // -------------------------------------------------------------------------
+    // GET /api/admin/staff (List all staff administrators)
+    // -------------------------------------------------------------------------
+    if (path === '/admin/staff' && event.httpMethod === 'GET') {
+      const authHeader = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader);
+      if (!user || user.role !== 'admin') {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'error', message: 'Admin access required.' }),
+        };
+      }
+      const admins = await AuthService.listStaffAdmins();
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'success', data: admins }),
+      };
+    }
+
+    // -------------------------------------------------------------------------
+    // POST /api/admin/staff (Provision new staff administrator)
+    // -------------------------------------------------------------------------
+    if (path === '/admin/staff' && event.httpMethod === 'POST') {
+      const authHeader = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader);
+      if (!user || user.role !== 'admin') {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'error', message: 'Admin access required.' }),
+        };
+      }
+      const body = parseRequestBody(event.body);
+      const newAdmin = await AuthService.createStaffAdmin(
+        user.id,
+        {
+          email: body.email,
+          password: body.password,
+          first_name: body.first_name,
+          last_name: body.last_name,
+        },
+        clientIp,
+        userAgent
+      );
+      return {
+        statusCode: 201,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'success', data: newAdmin }),
+      };
+    }
+
+    // -------------------------------------------------------------------------
+    // POST /api/admin/staff/status (Activate / Deactivate staff administrator)
+    // -------------------------------------------------------------------------
+    if (path === '/admin/staff/status' && event.httpMethod === 'POST') {
+      const authHeader = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader);
+      if (!user || user.role !== 'admin') {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'error', message: 'Admin access required.' }),
+        };
+      }
+      const body = parseRequestBody(event.body);
+      const result = await AuthService.setStaffAdminStatus(
+        user.id,
+        body.admin_id,
+        body.status,
+        body.reason,
+        clientIp,
+        userAgent
+      );
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'success', data: result }),
       };
     }
 

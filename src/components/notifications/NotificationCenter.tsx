@@ -47,7 +47,8 @@ export function NotificationCenter({ onNavigate }: NotificationCenterProps) {
       const data = await res.json();
       if (data?.status === 'success' && data.data) {
         setNotifications(data.data.notifications || []);
-        setUnreadCount(data.data.unread_count || 0);
+        const unread = data.data.unreadCount ?? data.data.unread_count ?? 0;
+        setUnreadCount(unread);
       }
     } catch {
       // ignore transient errors
@@ -56,8 +57,6 @@ export function NotificationCenter({ onNavigate }: NotificationCenterProps) {
 
   useEffect(() => {
     fetchNotifications();
-    const interval = setInterval(fetchNotifications, 15000);
-    return () => clearInterval(interval);
   }, [token]);
 
   // Click outside listener
@@ -304,7 +303,7 @@ export function NotificationCenter({ onNavigate }: NotificationCenterProps) {
           {/* Footer */}
           <div className="p-2.5 bg-[#0b0e14] border-t border-[#26334d] text-center">
             <span className="text-[10px] text-slate-500 font-mono">
-              Live updates via Netlify Functions backend
+              Live notifications & security alerts
             </span>
           </div>
         </div>

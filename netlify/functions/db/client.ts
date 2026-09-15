@@ -281,6 +281,7 @@ class InMemoryDb {
   public supportMessages: SupportTicketMessageRecord[] = [];
   public supportAttachments: SupportTicketAttachmentRecord[] = [];
   public notifications: NotificationRecord[] = [];
+  public systemSettings: Map<string, any> = new Map();
 
   constructor() {
     // Clean initial state: zero demo accounts, zero fake records.
@@ -302,6 +303,7 @@ class InMemoryDb {
     this.supportMessages = [];
     this.supportAttachments = [];
     this.notifications = [];
+    this.systemSettings.clear();
   }
 }
 
