@@ -15,13 +15,19 @@ import {
   Info,
   ChevronRight,
   Sparkles,
+  Key,
+  Eye,
+  EyeOff,
+  Copy,
+  Check,
+  ExternalLink,
 } from 'lucide-react';
 
 export interface TradingAccount {
   id: string;
   account_number: string;
   user_id: string;
-  platform: 'MT4' | 'MT5' | 'cTrader' | 'WebTrader';
+  platform: string;
   account_type: 'standard' | 'raw_spread' | 'pro' | 'islamic';
   server_name: string;
   currency: string;
@@ -35,6 +41,9 @@ export interface TradingAccount {
   rejection_reason?: string | null;
   approved_at?: string | null;
   created_at: string;
+  password?: string | null;
+  balance?: string | null;
+  terminal_url?: string | null;
 }
 
 export function ClientTradingAccountsView() {
@@ -50,7 +59,20 @@ export function ClientTradingAccountsView() {
   const [showLinkModal, setShowLinkModal] = useState(false);
   const [editingNicknameAccount, setEditingNicknameAccount] = useState<TradingAccount | null>(null);
   const [leverageRequestAccount, setLeverageRequestAccount] = useState<TradingAccount | null>(null);
+  const [passwordResetAccount, setPasswordResetAccount] = useState<TradingAccount | null>(null);
+  const [passwordResetReason, setPasswordResetReason] = useState('');
+  const [submittingPasswordReset, setSubmittingPasswordReset] = useState(false);
   const [inspectAccount, setInspectAccount] = useState<TradingAccount | null>(null);
+
+  // Password visibility & clipboard helpers
+  const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({});
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const copyToClipboard = (text: string, idKey: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(idKey);
+    setTimeout(() => setCopiedId(null), 2500);
+  };
 
   // Form states - Registration
   const [regPlatform, setRegPlatform] = useState<'MT4' | 'MT5' | 'cTrader' | 'WebTrader'>('MT5');
@@ -253,6 +275,43 @@ export function ClientTradingAccountsView() {
       setErrorMessage(err.message || 'Network error submitting leverage request');
     } finally {
       setSubmittingLeverage(false);
+    }
+  };
+
+  const handleRequestPasswordReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!token || !passwordResetAccount) return;
+    setSubmittingPasswordReset(true);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+
+    try {
+      const res = await fetch(`/api/trading-accounts/${passwordResetAccount.id}/password-reset`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          reason: passwordResetReason.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.status === 'success') {
+        setSuccessMessage(
+          data.message ||
+            `Password reset request for account #${passwordResetAccount.account_number} submitted to administration.`
+        );
+        setPasswordResetAccount(null);
+        setPasswordResetReason('');
+        await fetchAccounts();
+      } else {
+        setErrorMessage(data.message || 'Failed to submit password reset request');
+      }
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Network error submitting password reset request');
+    } finally {
+      setSubmittingPasswordReset(false);
     }
   };
 
@@ -527,6 +586,15 @@ export function ClientTradingAccountsView() {
                     </span>
                   </div>
 
+                  {/* Card Balance */}
+                  <div className="flex items-baseline justify-between mb-2.5 px-0.5">
+                    <span className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Account Balance</span>
+                    <span className="text-sm font-bold font-mono text-emerald-400">
+                      ${account.balance || (account.is_demo ? '10,000.00' : '0.00')}{' '}
+                      <span className="text-[11px] text-slate-400 font-normal">{account.currency}</span>
+                    </span>
+                  </div>
+
                   {/* Card Spec Details */}
                   <div className="grid grid-cols-2 gap-2 bg-slate-950/50 rounded-lg p-2.5 border border-slate-800/80 text-xs mb-3">
                     <div>
@@ -551,6 +619,50 @@ export function ClientTradingAccountsView() {
                     </div>
                   </div>
 
+                  {/* Password Display (for demo credentials or broker-provided logins) */}
+                  {account.password && (
+                    <div className="flex items-center justify-between bg-slate-950/80 px-2.5 py-1.5 rounded-lg border border-slate-800 text-[11px] mb-3">
+                      <div className="flex items-center gap-1.5 font-mono">
+                        <Key className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+                        <span className="text-slate-400">Password:</span>
+                        <span className="text-white font-bold">
+                          {visiblePasswords[account.id] ? account.password : '••••••••••••'}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setVisiblePasswords((prev) => ({
+                              ...prev,
+                              [account.id]: !prev[account.id],
+                            }))
+                          }
+                          className="text-slate-400 hover:text-slate-200 p-1"
+                          title={visiblePasswords[account.id] ? 'Hide password' : 'Show password'}
+                        >
+                          {visiblePasswords[account.id] ? (
+                            <EyeOff className="w-3.5 h-3.5" />
+                          ) : (
+                            <Eye className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => copyToClipboard(account.password!, `c_pwd_${account.id}`)}
+                          className="text-slate-400 hover:text-slate-200 p-1"
+                          title="Copy password"
+                        >
+                          {copiedId === `c_pwd_${account.id}` ? (
+                            <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Rejection / Note feedback if any */}
                   {account.rejection_reason && (
                     <div className="mb-3 p-2 rounded bg-rose-500/10 border border-rose-500/20 text-[11px] text-rose-300">
@@ -565,18 +677,50 @@ export function ClientTradingAccountsView() {
                 </div>
 
                 {/* Card Actions */}
-                <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs">
-                  <button
-                    onClick={() => {
-                      setLeverageRequestAccount(account);
-                      setNewLeverage(account.leverage);
-                    }}
-                    disabled={account.status === 'archived' || account.status === 'disabled'}
-                    className="text-blue-400 hover:text-blue-300 font-medium disabled:text-slate-600 flex items-center gap-1"
-                  >
-                    <TrendingUp className="w-3.5 h-3.5" />
-                    <span>Change Leverage</span>
-                  </button>
+                <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs gap-2">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        setLeverageRequestAccount(account);
+                        setNewLeverage(account.leverage);
+                      }}
+                      disabled={account.status === 'archived' || account.status === 'disabled'}
+                      className="text-blue-400 hover:text-blue-300 font-medium disabled:text-slate-600 flex items-center gap-1"
+                    >
+                      <TrendingUp className="w-3.5 h-3.5" />
+                      <span>Change Leverage</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setPasswordResetAccount(account);
+                        setPasswordResetReason('');
+                      }}
+                      disabled={account.status === 'archived' || account.status === 'disabled'}
+                      className="text-amber-400 hover:text-amber-300 font-medium disabled:text-slate-600 flex items-center gap-1"
+                      title="Request Trading Password Reset"
+                    >
+                      <Key className="w-3.5 h-3.5" />
+                      <span>Reset Password</span>
+                    </button>
+
+                    {account.terminal_url ? (
+                      <a
+                        href={account.terminal_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 text-[11px] font-medium transition"
+                        title="Open Web Terminal in new tab"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        <span>Web Terminal</span>
+                      </a>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800/40 text-slate-500 border border-slate-800 text-[10px] italic">
+                        Terminal unavailable
+                      </span>
+                    )}
+                  </div>
 
                   <button
                     onClick={() => setInspectAccount(account)}
@@ -971,6 +1115,71 @@ export function ClientTradingAccountsView() {
         </div>
       )}
 
+      {/* Modal: Request Trading Password Reset */}
+      {passwordResetAccount && (
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4 backdrop-blur-xs">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Key className="w-4 h-4 text-amber-400" />
+                  <span>Request Trading Password Reset</span>
+                </h3>
+                <p className="text-[11px] font-mono text-slate-400">
+                  Account #{passwordResetAccount.account_number} ({passwordResetAccount.platform} • {passwordResetAccount.is_demo ? 'Demo' : 'Live'})
+                </p>
+              </div>
+              <button
+                onClick={() => setPasswordResetAccount(null)}
+                className="text-slate-400 hover:text-slate-200 text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 text-xs text-amber-200/90 leading-relaxed">
+              <span className="font-semibold text-amber-300 block mb-1">
+                Security & Platform Credential Workflow
+              </span>
+              Trading terminal credentials for {passwordResetAccount.platform} are issued and verified by broker desk administration. Submitting this request places a priority ticket in the administrative queue.
+            </div>
+
+            <form onSubmit={handleRequestPasswordReset} className="space-y-3.5">
+              <div>
+                <label className="text-xs font-semibold text-slate-300 block mb-1">
+                  Reason for Password Reset <span className="text-slate-500 font-normal">(Optional)</span>
+                </label>
+                <textarea
+                  rows={3}
+                  placeholder="e.g. Forgotten password, suspicious activity, periodic security rotation..."
+                  value={passwordResetReason}
+                  onChange={(e) => setPasswordResetReason(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-400"
+                />
+              </div>
+
+              <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setPasswordResetAccount(null)}
+                  className="px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-white"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingPasswordReset}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold disabled:opacity-50 transition"
+                >
+                  <Key className="w-3.5 h-3.5" />
+                  <span>{submittingPasswordReset ? 'Submitting...' : 'Submit Reset Request'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Modal: View Specifications */}
       {inspectAccount && (
         <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4 backdrop-blur-xs">
@@ -986,6 +1195,12 @@ export function ClientTradingAccountsView() {
             </div>
 
             <div className="space-y-2.5 text-xs">
+              <div className="flex justify-between py-1.5 border-b border-slate-800/60">
+                <span className="text-slate-400">Balance</span>
+                <span className="font-bold font-mono text-emerald-400">
+                  ${inspectAccount.balance || (inspectAccount.is_demo ? '10,000.00' : '0.00')} {inspectAccount.currency}
+                </span>
+              </div>
               <div className="flex justify-between py-1.5 border-b border-slate-800/60">
                 <span className="text-slate-400">Platform</span>
                 <span className="font-semibold text-white">{inspectAccount.platform}</span>
@@ -1006,6 +1221,48 @@ export function ClientTradingAccountsView() {
                 <span className="text-slate-400">Server</span>
                 <span className="font-semibold text-white">{inspectAccount.server_name}</span>
               </div>
+
+              {inspectAccount.password && (
+                <div className="flex justify-between items-center py-1.5 border-b border-slate-800/60 bg-slate-950/60 px-2.5 rounded">
+                  <span className="text-slate-400 flex items-center gap-1.5">
+                    <Key className="w-3.5 h-3.5 text-amber-400" />
+                    Trading Password
+                  </span>
+                  <div className="flex items-center gap-1.5 font-mono">
+                    <span className="text-white font-bold">
+                      {visiblePasswords[`modal_${inspectAccount.id}`] ? inspectAccount.password : '••••••••••••'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setVisiblePasswords((prev) => ({
+                          ...prev,
+                          [`modal_${inspectAccount.id}`]: !prev[`modal_${inspectAccount.id}`],
+                        }))
+                      }
+                      className="text-slate-400 hover:text-slate-200 p-0.5"
+                    >
+                      {visiblePasswords[`modal_${inspectAccount.id}`] ? (
+                        <EyeOff className="w-3.5 h-3.5" />
+                      ) : (
+                        <Eye className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(inspectAccount.password!, `spec_pwd_${inspectAccount.id}`)}
+                      className="text-slate-400 hover:text-slate-200 p-0.5"
+                    >
+                      {copiedId === `spec_pwd_${inspectAccount.id}` ? (
+                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="flex justify-between py-1.5 border-b border-slate-800/60">
                 <span className="text-slate-400">Group Tier</span>
                 <span className="font-mono text-slate-300">{inspectAccount.group_tier || 'Default'}</span>
@@ -1022,7 +1279,22 @@ export function ClientTradingAccountsView() {
               )}
             </div>
 
-            <div className="pt-2 text-right">
+            <div className="pt-2 flex items-center justify-between">
+              {inspectAccount.terminal_url ? (
+                <a
+                  href={inspectAccount.terminal_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>Launch Web Terminal</span>
+                </a>
+              ) : (
+                <span className="text-[11px] text-slate-500 italic bg-slate-950/60 px-2.5 py-1.5 rounded border border-slate-800">
+                  Web terminal not configured
+                </span>
+              )}
               <button
                 onClick={() => setInspectAccount(null)}
                 className="px-4 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold"

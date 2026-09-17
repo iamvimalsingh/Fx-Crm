@@ -29,6 +29,9 @@ import {
   AlertTriangle,
   ArrowLeft,
   Send,
+  Key,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 
 export interface WalletData {
@@ -43,7 +46,7 @@ export interface TradingAccount {
   id: string;
   account_number: string;
   user_id: string;
-  platform: 'MT4' | 'MT5' | 'cTrader' | 'WebTrader' | 'TradeLocker';
+  platform: 'MT4' | 'MT5' | 'cTrader' | 'WebTrader' | 'TradeLocker' | string;
   account_type: 'standard' | 'raw_spread' | 'pro' | 'islamic';
   server_name: string;
   currency: string;
@@ -56,6 +59,8 @@ export interface TradingAccount {
   created_at: string;
   balance?: string | null;
   equity?: string | null;
+  password?: string | null;
+  terminal_url?: string | null;
 }
 
 export interface KycProfile {
@@ -141,6 +146,7 @@ export function ClientTraderCockpit({
   const [launchpadAccount, setLaunchpadAccount] = useState<TradingAccount | null>(null);
   const [selectedWorkspaceAccountId, setSelectedWorkspaceAccountId] = useState<string | null>(null);
   const [workspaceSubTab, setWorkspaceSubTab] = useState<'positions' | 'orders' | 'specifications'>('positions');
+  const [cockpitPasswordsVisible, setCockpitPasswordsVisible] = useState<Record<string, boolean>>({});
 
   // Form states - Deposit
   const [depMethodId, setDepMethodId] = useState<string>('');
@@ -1259,8 +1265,61 @@ export function ClientTraderCockpit({
                       </div>
                       <div>
                         <span className="text-slate-500 block text-[10px]">Master Password</span>
-                        <span className="text-slate-400 italic text-[11px]">Password retrieval not configured in V1</span>
+                        {activeWorkspaceAccount.password ? (
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            <span className="text-white font-bold font-mono">
+                              {cockpitPasswordsVisible[activeWorkspaceAccount.id]
+                                ? activeWorkspaceAccount.password
+                                : '••••••••••••'}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setCockpitPasswordsVisible((prev) => ({
+                                  ...prev,
+                                  [activeWorkspaceAccount.id]: !prev[activeWorkspaceAccount.id],
+                                }))
+                              }
+                              className="text-slate-400 hover:text-slate-200"
+                              title={cockpitPasswordsVisible[activeWorkspaceAccount.id] ? 'Hide' : 'Show'}
+                            >
+                              {cockpitPasswordsVisible[activeWorkspaceAccount.id] ? (
+                                <EyeOff className="w-3.5 h-3.5" />
+                              ) : (
+                                <Eye className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => copyText(activeWorkspaceAccount.password!, `cp_pwd_${activeWorkspaceAccount.id}`)}
+                              className="text-slate-400 hover:text-slate-200"
+                              title="Copy password"
+                            >
+                              {copiedKey === `cp_pwd_${activeWorkspaceAccount.id}` ? (
+                                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-slate-400 italic text-[11px]">Broker auto-managed</span>
+                        )}
                       </div>
+                      {activeWorkspaceAccount.terminal_url && (
+                        <div className="col-span-2 sm:col-span-3 pt-2.5 border-t border-[#141c2c] flex items-center justify-between">
+                          <span className="text-slate-400 text-xs">Direct Web Trader Gateway:</span>
+                          <a
+                            href={activeWorkspaceAccount.terminal_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 text-xs font-semibold transition"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                            <span>Open Web Terminal</span>
+                          </a>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -2300,13 +2359,54 @@ export function ClientTraderCockpit({
                 </div>
                 <div className="col-span-2 pt-1 border-t border-slate-900">
                   <span className="text-slate-500 block text-[10px]">Master Trading Password</span>
-                  <span className="text-slate-400 italic text-[11px]">Password retrieval not configured in V1</span>
+                  {launchpadAccount.password ? (
+                    <div className="flex items-center justify-between mt-0.5">
+                      <span className="text-white font-bold font-mono">
+                        {cockpitPasswordsVisible[`lp_${launchpadAccount.id}`]
+                          ? launchpadAccount.password
+                          : '••••••••••••'}
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCockpitPasswordsVisible((prev) => ({
+                              ...prev,
+                              [`lp_${launchpadAccount.id}`]: !prev[`lp_${launchpadAccount.id}`],
+                            }))
+                          }
+                          className="text-slate-400 hover:text-slate-200 p-0.5"
+                          title={cockpitPasswordsVisible[`lp_${launchpadAccount.id}`] ? 'Hide' : 'Show'}
+                        >
+                          {cockpitPasswordsVisible[`lp_${launchpadAccount.id}`] ? (
+                            <EyeOff className="w-3.5 h-3.5" />
+                          ) : (
+                            <Eye className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => copyText(launchpadAccount.password!, `lp_pwd_${launchpadAccount.id}`)}
+                          className="text-slate-400 hover:text-slate-200 p-0.5"
+                          title="Copy password"
+                        >
+                          {copiedKey === `lp_pwd_${launchpadAccount.id}` ? (
+                            <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <span className="text-slate-400 italic text-[11px]">Broker auto-managed</span>
+                  )}
                 </div>
                 <div className="col-span-2 pt-1 border-t border-slate-900">
                   <span className="text-slate-500 block text-[10px]">Investor Password (Read-Only)</span>
                   <div className="flex items-center justify-between text-[11px]">
-                    <span className="text-slate-400 italic">Password retrieval not configured in V1</span>
-                    <span className="text-[10px] text-slate-600 font-mono">(Copy Disabled)</span>
+                    <span className="text-slate-400 italic">Read-only investor view</span>
+                    <span className="text-[10px] text-slate-600 font-mono">(Active)</span>
                   </div>
                 </div>
               </div>
@@ -2318,22 +2418,35 @@ export function ClientTraderCockpit({
               <span className="text-white font-mono font-semibold">{launchpadAccount.server_name}</span>, and authenticate with your account credentials.
             </div>
 
-            <div className="pt-2 flex items-center justify-between border-t border-slate-800">
-              <button
-                onClick={() => {
-                  setLaunchpadAccount(null);
-                  onNavigate('trade');
-                }}
-                className="text-xs text-blue-400 hover:text-blue-300 font-semibold flex items-center gap-1"
-              >
-                <span>View WebTrader Gateway</span>
-                <ExternalLink className="w-3.5 h-3.5" />
-              </button>
+            <div className="pt-2 flex items-center justify-between border-t border-slate-800 gap-2">
+              <div className="flex items-center gap-2">
+                {launchpadAccount.terminal_url && (
+                  <a
+                    href={launchpadAccount.terminal_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition shadow-sm"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>Launch Web Terminal</span>
+                  </a>
+                )}
+                <button
+                  onClick={() => {
+                    setLaunchpadAccount(null);
+                    onNavigate('trade');
+                  }}
+                  className="text-xs text-blue-400 hover:text-blue-300 font-semibold flex items-center gap-1"
+                >
+                  <span>Trading Terminal</span>
+                  <ExternalLink className="w-3 h-3" />
+                </button>
+              </div>
 
               <button
                 type="button"
                 onClick={() => setLaunchpadAccount(null)}
-                className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold transition"
+                className="px-4 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold transition"
               >
                 Close Launchpad
               </button>

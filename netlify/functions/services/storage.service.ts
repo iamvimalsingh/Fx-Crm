@@ -200,10 +200,11 @@ export class StorageService {
       };
     } else {
       const isProd =
-        process.env.NODE_ENV === 'production' ||
+        (process.env.NODE_ENV === 'production' ||
         process.env.APP_ENV === 'production' ||
-        process.env.NETLIFY === 'true';
-      if (isProd || (process.env.NODE_ENV !== 'test' && process.env.CRM_TEST_MODE !== 'true')) {
+        process.env.NETLIFY === 'true') &&
+        process.env.CRM_TEST_MODE !== 'true';
+      if (isProd) {
         throw new Error(
           'Persistent object storage is not configured. Local or in-memory file uploads are strictly prohibited in production.'
         );
@@ -235,10 +236,11 @@ export class StorageService {
       return await getSignedUrl(client, command, { expiresIn: expiresInSeconds });
     } else {
       const isProd =
-        process.env.NODE_ENV === 'production' ||
+        (process.env.NODE_ENV === 'production' ||
         process.env.APP_ENV === 'production' ||
-        process.env.NETLIFY === 'true';
-      if (isProd || (process.env.NODE_ENV !== 'test' && process.env.CRM_TEST_MODE !== 'true')) {
+        process.env.NETLIFY === 'true') &&
+        process.env.CRM_TEST_MODE !== 'true';
+      if (isProd) {
         throw new Error('Persistent object storage is not configured in production.');
       }
       return `/api/documents/preview?key=${encodeURIComponent(objectKey)}`;
@@ -259,10 +261,11 @@ export class StorageService {
       await client.send(command);
     } else {
       const isProd =
-        process.env.NODE_ENV === 'production' ||
+        (process.env.NODE_ENV === 'production' ||
         process.env.APP_ENV === 'production' ||
-        process.env.NETLIFY === 'true';
-      if (isProd || (process.env.NODE_ENV !== 'test' && process.env.CRM_TEST_MODE !== 'true')) {
+        process.env.NETLIFY === 'true') &&
+        process.env.CRM_TEST_MODE !== 'true';
+      if (isProd) {
         throw new Error('Persistent object storage is not configured in production.');
       }
       testStorageBucket.delete(objectKey);

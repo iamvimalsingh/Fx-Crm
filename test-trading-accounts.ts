@@ -100,6 +100,23 @@ async function runTests() {
   const clientAToken = clientARes.body.data.token;
   const clientAId = clientARes.body.data.user.id;
 
+  // Verify Alice has 1 auto-provisioned default demo account upon registration
+  const aliceInitialAccRes = await callApi({
+    path: '/api/trading-accounts',
+    method: 'GET',
+    token: clientAToken,
+  });
+  assert(aliceInitialAccRes.status === 200, 'Alice fetches accounts immediately after registration');
+  assert(aliceInitialAccRes.body.data.length === 1, 'Alice has 1 default demo account auto-provisioned upon registration');
+  const aliceDefaultDemo = aliceInitialAccRes.body.data[0];
+  assert(aliceDefaultDemo.is_demo === true, 'Default account is marked is_demo=true');
+  assert(aliceDefaultDemo.status === 'active', 'Default demo account is immediately active');
+  assert(aliceDefaultDemo.balance === '10000.00', 'Default demo balance is 10000.00');
+  assert(aliceDefaultDemo.currency === 'USD', 'Default demo currency matches preferred currency (USD)');
+  assert(Boolean(aliceDefaultDemo.password), 'Default demo account has generated password');
+  assert(aliceDefaultDemo.password.startsWith('Demo@'), 'Demo password uses generated Demo@ pattern');
+  assert(Boolean(aliceDefaultDemo.account_number), 'Default demo account has generated account number');
+
   // Register Client B
   const clientBRes = await callApi({
     path: '/api/auth/register',
@@ -116,6 +133,19 @@ async function runTests() {
   assert(clientBRes.status === 201, 'Client Bob registered');
   const clientBToken = clientBRes.body.data.token;
   const clientBId = clientBRes.body.data.user.id;
+
+  // Verify Bob has 1 auto-provisioned default demo account in EUR
+  const bobInitialAccRes = await callApi({
+    path: '/api/trading-accounts',
+    method: 'GET',
+    token: clientBToken,
+  });
+  assert(bobInitialAccRes.status === 200, 'Bob fetches accounts immediately after registration');
+  assert(bobInitialAccRes.body.data.length === 1, 'Bob has 1 default demo account auto-provisioned upon registration');
+  const bobDefaultDemo = bobInitialAccRes.body.data[0];
+  assert(bobDefaultDemo.is_demo === true, 'Bob default account is demo');
+  assert(bobDefaultDemo.currency === 'EUR', 'Bob demo account uses preferred currency (EUR)');
+  assert(bobDefaultDemo.password !== aliceDefaultDemo.password, 'Bob has distinct random password from Alice');
 
   // -------------------------------------------------------------------------
   // [2] Authorization & RBAC Route Protection
@@ -209,7 +239,7 @@ async function runTests() {
     token: clientAToken,
   });
   assert(listAliceRes.status === 200, 'Client A fetches their own account list');
-  assert(listAliceRes.body.data.length === 2, 'Client A has exactly 2 registered trading accounts');
+  assert(listAliceRes.body.data.length === 3, 'Client A has 3 trading accounts (1 default demo + 1 live + 1 custom demo)');
 
   // -------------------------------------------------------------------------
   // [4] IDOR (Insecure Direct Object Reference) Protection Tests
@@ -348,7 +378,53 @@ async function runTests() {
     token: adminToken,
   });
   assert(adminListRes.status === 200, 'Admin fetches all trading accounts across users');
-  assert(adminListRes.body.data.length === 3, 'Admin sees all 3 trading accounts');
+  assert(adminListRes.body.data.length === 5, 'Admin sees all 5 trading accounts (Alice 4 + Bob 1)');
+
+  // Admin inspects Bob's demo account and updates demo credentials
+  const bobDemoFromAdmin = adminListRes.body.data.find((a: any) => a.user_id === clientBId && a.is_demo);
+  assert(Boolean(bobDemoFromAdmin), 'Admin finds Bob demo account');
+
+  const updateDemoRes = await callApi({
+    path: `/api/admin/trading-accounts/${bobDemoFromAdmin.id}/metadata`,
+    method: 'PATCH',
+    token: adminToken,
+    body: {
+      password: 'DemoUpdated#999',
+      balance: '25000.00',
+      server_name: 'Broker-MT5-Demo-VIP',
+      terminal_url: 'https://trade.mql5.com/trade?server=Broker-MT5-Demo-VIP',
+      admin_notes: 'Updated Bob demo balance and credentials for competition',
+    },
+  });
+  assert(updateDemoRes.status === 200, 'Admin successfully updates demo account credentials and balance');
+  assert(updateDemoRes.body.data.password === 'DemoUpdated#999', 'Demo password updated in record');
+  assert(updateDemoRes.body.data.balance === '25000.00', 'Demo balance updated to 25000.00');
+  assert(updateDemoRes.body.data.server_name === 'Broker-MT5-Demo-VIP', 'Demo server name updated');
+
+  // Bob verifies the updated demo balance and credentials
+  const bobCheckRes = await callApi({
+    path: '/api/trading-accounts',
+    method: 'GET',
+    token: clientBToken,
+  });
+  const bobUpdatedDemo = bobCheckRes.body.data.find((a: any) => a.id === bobDemoFromAdmin.id);
+  assert(bobUpdatedDemo.balance === '25000.00', 'Bob sees updated demo balance (25000.00)');
+  assert(bobUpdatedDemo.password === 'DemoUpdated#999', 'Bob sees updated demo password');
+
+  // Verify Audit Log does NOT contain plaintext password
+  const bobAuditRes = await callApi({
+    path: `/api/admin/trading-accounts/${bobDemoFromAdmin.id}`,
+    method: 'GET',
+    token: adminToken,
+  });
+  assert(bobAuditRes.status === 200, 'Admin fetches Bob demo detail with audit trail');
+  const auditLogs = bobAuditRes.body.data.audit_trail;
+  assert(auditLogs.length > 0, 'Audit trail exists for demo account');
+  const leakedPassword = auditLogs.some((log: any) => 
+    JSON.stringify(log.details || {}).includes('DemoUpdated#999') ||
+    (log.action || '').includes('DemoUpdated#999')
+  );
+  assert(!leakedPassword, 'Audit logs NEVER store or leak plaintext demo passwords');
 
   // Admin inspects account detail with owner and audit trail
   const adminDetailRes = await callApi({

@@ -338,6 +338,7 @@ export class SupportService {
     const attsWithUrls = await Promise.all(
       attachments.map(async (att) => ({
         ...att,
+        storage_key: att.object_key,
         download_url: await StorageService.getDownloadUrl(att.object_key),
       }))
     );

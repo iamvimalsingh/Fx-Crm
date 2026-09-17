@@ -63,6 +63,7 @@ export type ResetPasswordInput = z.infer<typeof ResetPasswordSchema>;
 // Financial Module Schemas
 export const CreateDepositSchema = z.object({
   payment_method_id: z.string().optional().nullable(),
+  payment_method_name: z.string().max(255).optional().nullable(),
   amount: z
     .string()
     .min(1, 'Amount is required')
@@ -141,12 +142,41 @@ export type ApproveWithdrawalInput = z.infer<typeof ApproveWithdrawalSchema>;
 export type RejectWithdrawalInput = z.infer<typeof RejectWithdrawalSchema>;
 export type ManualAdjustmentInput = z.infer<typeof ManualAdjustmentSchema>;
 
+// Account Transfer Schemas (Wallet <-> Trading Account Transfers)
+export const CreateAccountTransferSchema = z.object({
+  trading_account_id: z.string().min(1, 'Trading account ID is required'),
+  direction: z.enum(['wallet_to_trading', 'trading_to_wallet'], {
+    message: 'Direction must be wallet_to_trading or trading_to_wallet',
+  }),
+  amount: z
+    .string()
+    .min(1, 'Amount is required')
+    .refine((val) => !isNaN(Number(val)) && Number(val) > 0, {
+      message: 'Transfer amount must be a positive number greater than 0',
+    }),
+  currency: z.string().optional().default('USD'),
+  client_notes: z.string().max(500).optional().nullable(),
+});
+
+export const ApproveAccountTransferSchema = z.object({
+  admin_notes: z.string().max(500).optional().nullable(),
+});
+
+export const RejectAccountTransferSchema = z.object({
+  rejection_reason: z.string().min(1, 'Rejection reason is required').max(500),
+  admin_notes: z.string().max(500).optional().nullable(),
+});
+
+export type CreateAccountTransferInput = z.input<typeof CreateAccountTransferSchema>;
+export type ApproveAccountTransferInput = z.infer<typeof ApproveAccountTransferSchema>;
+export type RejectAccountTransferInput = z.infer<typeof RejectAccountTransferSchema>;
+
 // Trading Account Registry Schemas (Strictly isolated from financial ledger)
 export const RegisterTradingAccountSchema = z.object({
-  platform: z.enum(['MT4', 'MT5', 'cTrader', 'WebTrader']),
+  platform: z.string().min(1, 'Trading platform is required').max(50),
   account_type: z.enum(['standard', 'raw_spread', 'pro', 'islamic']).default('standard'),
-  currency: z.string().min(3).max(5).default('USD'),
-  leverage: z.enum(['1:50', '1:100', '1:200', '1:400', '1:500']).default('1:100'),
+  currency: z.string().min(3).max(10).default('USD'),
+  leverage: z.string().min(1).max(20).default('1:100'),
   nickname: z.string().max(100).optional().nullable(),
   is_demo: z.boolean().default(false),
   server_name: z.string().max(100).optional().nullable(),
@@ -157,11 +187,11 @@ export const LinkTradingAccountSchema = z.object({
     .string()
     .min(4, 'Account number must be at least 4 characters')
     .max(50),
-  platform: z.enum(['MT4', 'MT5', 'cTrader', 'WebTrader']),
+  platform: z.string().min(1, 'Trading platform is required').max(50),
   server_name: z.string().min(1, 'Trading server name is required').max(100),
   account_type: z.enum(['standard', 'raw_spread', 'pro', 'islamic']).default('standard'),
-  currency: z.string().min(3).max(5).default('USD'),
-  leverage: z.enum(['1:50', '1:100', '1:200', '1:400', '1:500']).default('1:100'),
+  currency: z.string().min(3).max(10).default('USD'),
+  leverage: z.string().min(1).max(20).default('1:100'),
   nickname: z.string().max(100).optional().nullable(),
   investor_notes: z.string().max(500).optional().nullable(),
 });
@@ -171,7 +201,7 @@ export const UpdateTradingAccountNicknameSchema = z.object({
 });
 
 export const RequestLeverageChangeSchema = z.object({
-  requested_leverage: z.enum(['1:50', '1:100', '1:200', '1:400', '1:500']),
+  requested_leverage: z.string().min(1).max(20),
   reason: z.string().max(300).optional().nullable(),
 });
 
@@ -193,11 +223,19 @@ export const UpdateTradingAccountStatusSchema = z.object({
 });
 
 export const AdminUpdateTradingAccountMetadataSchema = z.object({
-  leverage: z.enum(['1:50', '1:100', '1:200', '1:400', '1:500']).optional(),
-  server_name: z.string().max(100).optional(),
+  account_number: z.string().min(3).max(50).optional(),
+  password: z.string().min(1).max(100).optional().nullable(),
+  platform: z.string().min(1).max(50).optional(),
+  server_name: z.string().max(100).optional().nullable(),
+  currency: z.string().min(3).max(10).optional(),
+  leverage: z.string().max(20).optional(),
+  balance: z.string().max(30).optional(),
+  status: z.enum(['pending_approval', 'active', 'read_only', 'disabled', 'archived']).optional(),
+  terminal_url: z.string().max(500).optional().nullable(),
   group_tier: z.string().max(100).optional().nullable(),
   account_type: z.enum(['standard', 'raw_spread', 'pro', 'islamic']).optional(),
   admin_notes: z.string().max(500).optional().nullable(),
+  nickname: z.string().max(100).optional().nullable(),
 });
 
 export type RegisterTradingAccountInput = z.infer<typeof RegisterTradingAccountSchema>;
@@ -232,9 +270,19 @@ export const KycReviewSchema = z.object({
 });
 
 export const KycDocumentUploadSchema = z.object({
-  document_type: z.enum(['id_front', 'id_back', 'passport', 'proof_of_address', 'other']),
+  document_type: z.preprocess((val) => {
+    if (typeof val !== 'string') return 'other';
+    const v = val.toLowerCase().trim();
+    if (v === 'national_id' || v === 'drivers_license') return 'id_front';
+    return v;
+  }, z.enum(['id_front', 'id_back', 'passport', 'proof_of_address', 'other'])),
   original_filename: z.string().min(1).max(255),
-  mime_type: z.enum(['image/jpeg', 'image/png', 'image/webp', 'application/pdf']),
+  mime_type: z.preprocess((val) => {
+    if (typeof val === 'string' && ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(val)) {
+      return val;
+    }
+    return val;
+  }, z.enum(['image/jpeg', 'image/png', 'image/webp', 'application/pdf'])),
   file_size: z.number().int().positive().max(10 * 1024 * 1024, 'Maximum document size is 10MB'),
   file_base64: z.string().min(1, 'File content is required'),
 });
@@ -246,14 +294,26 @@ export type KycDocumentUploadInput = z.infer<typeof KycDocumentUploadSchema>;
 // --- Support Ticket Schemas ---
 export const CreateSupportTicketSchema = z.object({
   subject: z.string().trim().min(3, 'Subject must be at least 3 characters').max(255),
-  category: z.enum(['general', 'deposit_withdrawal', 'trading', 'verification_kyc', 'technical']).default('general'),
+  category: z.preprocess((val) => {
+    if (typeof val !== 'string') return 'general';
+    const c = val.toLowerCase().trim();
+    if (c === 'account' || c === 'other') return 'general';
+    if (c === 'deposit' || c === 'withdrawal') return 'deposit_withdrawal';
+    if (c === 'kyc') return 'verification_kyc';
+    return c;
+  }, z.enum(['general', 'deposit_withdrawal', 'trading', 'verification_kyc', 'technical'])).default('general'),
   priority: z.enum(['low', 'medium', 'high', 'urgent']).default('medium'),
   message: z.string().trim().min(5, 'Message must be at least 5 characters').max(5000),
   attachments: z
     .array(
       z.object({
         original_filename: z.string().min(1).max(255),
-        mime_type: z.enum(['image/jpeg', 'image/png', 'image/webp', 'application/pdf']),
+        mime_type: z.preprocess((val) => {
+          if (typeof val === 'string' && ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(val)) {
+            return val;
+          }
+          return val;
+        }, z.enum(['image/jpeg', 'image/png', 'image/webp', 'application/pdf'])),
         file_size: z.number().int().positive().max(10 * 1024 * 1024),
         file_base64: z.string().min(1),
       })
@@ -269,7 +329,12 @@ export const ReplySupportTicketSchema = z.object({
     .array(
       z.object({
         original_filename: z.string().min(1).max(255),
-        mime_type: z.enum(['image/jpeg', 'image/png', 'image/webp', 'application/pdf']),
+        mime_type: z.preprocess((val) => {
+          if (typeof val === 'string' && ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(val)) {
+            return val;
+          }
+          return val;
+        }, z.enum(['image/jpeg', 'image/png', 'image/webp', 'application/pdf'])),
         file_size: z.number().int().positive().max(10 * 1024 * 1024),
         file_base64: z.string().min(1),
       })

@@ -27,6 +27,9 @@ import {
   ApproveWithdrawalSchema,
   RejectWithdrawalSchema,
   ManualAdjustmentSchema,
+  CreateAccountTransferSchema,
+  ApproveAccountTransferSchema,
+  RejectAccountTransferSchema,
   RegisterTradingAccountSchema,
   LinkTradingAccountSchema,
   UpdateTradingAccountNicknameSchema,
@@ -458,6 +461,41 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
       };
     }
 
+    // DELETE /api/admin/clients/:id (Admin Client Deletion / Deactivation)
+    const clientDeleteMatch = path.match(/^\/admin\/clients\/([^/]+)$/);
+    if (clientDeleteMatch && event.httpMethod === 'DELETE') {
+      const authHeader = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader);
+      if (!user) {
+        return {
+          statusCode: 401,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'error', message: 'Unauthorized.' }),
+        };
+      }
+      if (user.role !== 'admin') {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'error', message: 'Forbidden. Admin credentials required.' }),
+        };
+      }
+      const clientId = clientDeleteMatch[1];
+      const body = parseRequestBody(event.body);
+      const res = await AuthService.deleteClient(
+        user.id,
+        clientId,
+        { confirmEmail: body?.confirmEmail },
+        clientIp,
+        userAgent
+      );
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'success', ...res }),
+      };
+    }
+
     // POST /api/admin/notifications/broadcast
     if (path === '/admin/notifications/broadcast' && event.httpMethod === 'POST') {
       const authHeader = event.headers.authorization || event.headers.Authorization;
@@ -776,6 +814,44 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
     }
 
     // -------------------------------------------------------------------------
+    // POST /api/financial/transfers (Client creates transfer: Wallet <-> Trading Account)
+    // -------------------------------------------------------------------------
+    if (path === '/financial/transfers' && event.httpMethod === 'POST' && authUser) {
+      const body = parseRequestBody(event.body);
+      const validated = CreateAccountTransferSchema.parse(body);
+      const result = await FinancialService.createAccountTransfer(authUser.id, validated, clientIp, userAgent);
+      return {
+        statusCode: 201,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'success', data: result }),
+      };
+    }
+
+    // -------------------------------------------------------------------------
+    // GET /api/financial/transfers (List transfers: client gets own, admin sees all/filtered)
+    // -------------------------------------------------------------------------
+    if (path === '/financial/transfers' && event.httpMethod === 'GET' && authUser) {
+      const status = event.queryStringParameters?.status as string | undefined;
+      const tradingAccountId = event.queryStringParameters?.trading_account_id as string | undefined;
+      const targetUserId =
+        authUser.role === 'admin'
+          ? (event.queryStringParameters?.user_id as string | undefined)
+          : authUser.id;
+
+      const transfers = await FinancialService.getAccountTransfers({
+        userId: targetUserId,
+        status,
+        tradingAccountId,
+      });
+
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'success', data: transfers }),
+      };
+    }
+
+    // -------------------------------------------------------------------------
     // ADMIN ONLY FINANCIAL ROUTES (Require role: 'admin')
     // -------------------------------------------------------------------------
     if (path.startsWith('/financial/admin/')) {
@@ -843,6 +919,34 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
         };
       }
 
+      // POST /api/financial/admin/transfers/:id/approve
+      const approveTrfMatch = path.match(/^\/financial\/admin\/transfers\/([^/]+)\/approve$/);
+      if (approveTrfMatch && event.httpMethod === 'POST') {
+        const transferId = approveTrfMatch[1];
+        const body = parseRequestBody(event.body);
+        const validated = ApproveAccountTransferSchema.parse(body);
+        const result = await FinancialService.approveAccountTransfer(transferId, authUser.id, validated, clientIp, userAgent);
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'success', data: result }),
+        };
+      }
+
+      // POST /api/financial/admin/transfers/:id/reject
+      const rejectTrfMatch = path.match(/^\/financial\/admin\/transfers\/([^/]+)\/reject$/);
+      if (rejectTrfMatch && event.httpMethod === 'POST') {
+        const transferId = rejectTrfMatch[1];
+        const body = parseRequestBody(event.body);
+        const validated = RejectAccountTransferSchema.parse(body);
+        const result = await FinancialService.rejectAccountTransfer(transferId, authUser.id, validated, clientIp, userAgent);
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'success', data: result }),
+        };
+      }
+
       // POST /api/financial/admin/adjustments
       if (path === '/financial/admin/adjustments' && event.httpMethod === 'POST') {
         const body = parseRequestBody(event.body);
@@ -877,7 +981,8 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
     // =========================================================================
     const isTradingAccountRoute =
       path.startsWith('/trading-accounts') ||
-      path.startsWith('/admin/trading-accounts');
+      path.startsWith('/admin/trading-accounts') ||
+      path.startsWith('/admin/trading-password-resets');
 
     if (isTradingAccountRoute) {
       if (!authUser) {
@@ -889,7 +994,10 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
       }
 
       // Admin routes role authorization guard
-      if (path.startsWith('/admin/trading-accounts') && authUser.role !== 'admin') {
+      if (
+        (path.startsWith('/admin/trading-accounts') || path.startsWith('/admin/trading-password-resets')) &&
+        authUser.role !== 'admin'
+      ) {
         return {
           statusCode: 403,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -1099,6 +1207,120 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
           statusCode: 200,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: 'success', data: detail }),
+        };
+      }
+
+      // Admin: DELETE /api/admin/trading-accounts/:id (Delete or archive trading account)
+      if (adminDetailMatch && event.httpMethod === 'DELETE') {
+        const accountId = adminDetailMatch[1];
+        const result = await TradingAccountService.deleteAccountAdmin(
+          authUser.id,
+          accountId,
+          clientIp,
+          userAgent
+        );
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'success', ...result }),
+        };
+      }
+
+      // Admin: POST /api/admin/trading-accounts/:id/assign (Assign / Map trading account to client)
+      const adminAssignMatch = path.match(/^\/admin\/trading-accounts\/([^/]+)\/assign$/);
+      if (adminAssignMatch && event.httpMethod === 'POST') {
+        const accountId = adminAssignMatch[1];
+        const body = parseRequestBody(event.body);
+        if (!body?.target_client_id) {
+          return {
+            statusCode: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'error', message: 'target_client_id is required' }),
+          };
+        }
+        const updated = await TradingAccountService.assignAccountToClientAdmin(
+          authUser.id,
+          accountId,
+          body.target_client_id,
+          clientIp,
+          userAgent
+        );
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'success', data: updated, message: 'Trading account successfully assigned to client.' }),
+        };
+      }
+
+      // Client: POST /api/trading-accounts/:id/password-reset (Request trading password reset)
+      const passwordResetReqMatch = path.match(/^\/trading-accounts\/([^/]+)\/password-reset$/);
+      if (passwordResetReqMatch && event.httpMethod === 'POST') {
+        const accountId = passwordResetReqMatch[1];
+        const body = parseRequestBody(event.body);
+        const result = await TradingAccountService.requestPasswordReset(
+          authUser.id,
+          accountId,
+          body?.reason,
+          clientIp,
+          userAgent
+        );
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'success', data: result, message: 'Password reset request submitted for administrative review.' }),
+        };
+      }
+
+      // Client: GET /api/trading-accounts/password-resets (List own password reset requests)
+      if (path === '/trading-accounts/password-resets' && event.httpMethod === 'GET') {
+        const resets = await TradingAccountService.getUserPasswordResets(authUser.id);
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'success', data: resets }),
+        };
+      }
+
+      // Admin: GET /api/admin/trading-password-resets (List all password reset requests)
+      if (path === '/admin/trading-password-resets' && event.httpMethod === 'GET') {
+        const status = event.queryStringParameters?.status;
+        const search = event.queryStringParameters?.search;
+        const list = await TradingAccountService.getAllPasswordResetsAdmin({ status, search });
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'success', data: list }),
+        };
+      }
+
+      // Admin: POST /api/admin/trading-password-resets/:id/process (Approve or Reject reset request)
+      const processResetMatch = path.match(/^\/admin\/trading-password-resets\/([^/]+)\/process$/);
+      if (processResetMatch && event.httpMethod === 'POST') {
+        const requestId = processResetMatch[1];
+        const body = parseRequestBody(event.body);
+        if (!body?.action || !['approve', 'reject'].includes(body.action)) {
+          return {
+            statusCode: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'error', message: "Action must be 'approve' or 'reject'" }),
+          };
+        }
+        const result = await TradingAccountService.processPasswordResetAdmin(
+          authUser.id,
+          requestId,
+          body.action,
+          {
+            new_password: body.new_password,
+            admin_notes: body.admin_notes,
+            rejection_reason: body.rejection_reason,
+          },
+          clientIp,
+          userAgent
+        );
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'success', ...result }),
         };
       }
     }

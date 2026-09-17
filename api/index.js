@@ -45202,7 +45202,7 @@ var require_jsonwebtoken = __commonJS({
 });
 
 // netlify/functions/services/auth.service.ts
-import crypto4 from "crypto";
+import crypto5 from "crypto";
 
 // node_modules/bcryptjs/index.js
 import nodeCrypto from "crypto";
@@ -47095,8 +47095,8 @@ var StorageService = class {
         url: downloadUrl
       };
     } else {
-      const isProd = process.env.NODE_ENV === "production" || process.env.APP_ENV === "production" || process.env.NETLIFY === "true";
-      if (isProd || process.env.NODE_ENV !== "test" && process.env.CRM_TEST_MODE !== "true") {
+      const isProd = (process.env.NODE_ENV === "production" || process.env.APP_ENV === "production" || process.env.NETLIFY === "true") && process.env.CRM_TEST_MODE !== "true";
+      if (isProd) {
         throw new Error(
           "Persistent object storage is not configured. Local or in-memory file uploads are strictly prohibited in production."
         );
@@ -47124,8 +47124,8 @@ var StorageService = class {
       });
       return await (0, import_s3_request_presigner.getSignedUrl)(client, command5, { expiresIn: expiresInSeconds });
     } else {
-      const isProd = process.env.NODE_ENV === "production" || process.env.APP_ENV === "production" || process.env.NETLIFY === "true";
-      if (isProd || process.env.NODE_ENV !== "test" && process.env.CRM_TEST_MODE !== "true") {
+      const isProd = (process.env.NODE_ENV === "production" || process.env.APP_ENV === "production" || process.env.NETLIFY === "true") && process.env.CRM_TEST_MODE !== "true";
+      if (isProd) {
         throw new Error("Persistent object storage is not configured in production.");
       }
       return `/api/documents/preview?key=${encodeURIComponent(objectKey)}`;
@@ -47144,8 +47144,8 @@ var StorageService = class {
       });
       await client.send(command5);
     } else {
-      const isProd = process.env.NODE_ENV === "production" || process.env.APP_ENV === "production" || process.env.NETLIFY === "true";
-      if (isProd || process.env.NODE_ENV !== "test" && process.env.CRM_TEST_MODE !== "true") {
+      const isProd = (process.env.NODE_ENV === "production" || process.env.APP_ENV === "production" || process.env.NETLIFY === "true") && process.env.CRM_TEST_MODE !== "true";
+      if (isProd) {
         throw new Error("Persistent object storage is not configured in production.");
       }
       testStorageBucket.delete(objectKey);
@@ -47287,6 +47287,8 @@ var InMemoryDb = class {
     this.supportMessages = [];
     this.supportAttachments = [];
     this.notifications = [];
+    this.accountTransfers = /* @__PURE__ */ new Map();
+    this.tradingPasswordResets = /* @__PURE__ */ new Map();
     this.systemSettings = /* @__PURE__ */ new Map();
   }
   clear() {
@@ -47305,6 +47307,8 @@ var InMemoryDb = class {
     this.supportMessages = [];
     this.supportAttachments = [];
     this.notifications = [];
+    this.accountTransfers.clear();
+    this.tradingPasswordResets.clear();
     this.systemSettings.clear();
   }
 };
@@ -47610,6 +47614,1558 @@ var NotificationService = class {
   }
 };
 
+// netlify/functions/services/trading-account.service.ts
+import crypto4 from "crypto";
+var TradingAccountService = class {
+  /**
+   * Records an audit log entry for trading account events
+   */
+  static async recordAuditLog(actorId, action, targetId, details, ip, userAgent) {
+    const pool2 = getPool();
+    const now = /* @__PURE__ */ new Date();
+    const auditId = crypto4.randomUUID();
+    const sanitizedIp = ip ? String(ip).split(",")[0].trim().substring(0, 100) : null;
+    const sanitizedUserAgent = userAgent ? String(userAgent).substring(0, 500) : null;
+    if (pool2) {
+      await query(
+        `INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, ip_address, user_agent, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [auditId, actorId, action, "trading_account", targetId, JSON.stringify(details), sanitizedIp, sanitizedUserAgent, now]
+      );
+    } else {
+      const record2 = {
+        id: auditId,
+        actor_id: actorId,
+        action,
+        entity_type: "trading_account",
+        entity_id: targetId,
+        details,
+        ip_address: sanitizedIp,
+        user_agent: sanitizedUserAgent,
+        created_at: now
+      };
+      inMemoryDb.auditLogs.unshift(record2);
+    }
+  }
+  /**
+   * Generates a numeric account login number
+   */
+  static generateAccountNumber(isDemo) {
+    const prefix = isDemo ? "90" : "20";
+    const rand = Math.floor(1e5 + Math.random() * 9e5);
+    return `${prefix}${rand}`;
+  }
+  /**
+   * Platform-agnostic terminal URL resolver based on platform and environment config
+   */
+  static resolveDefaultTerminalUrl(platform2) {
+    const cleanPlatform = (platform2 || "").trim().toUpperCase();
+    const envKey = `TERMINAL_URL_${cleanPlatform}`;
+    if (process.env[envKey]) {
+      return process.env[envKey];
+    }
+    if (process.env.DEFAULT_TERMINAL_URL) {
+      return process.env.DEFAULT_TERMINAL_URL;
+    }
+    switch (cleanPlatform) {
+      case "MT5":
+      case "MT4":
+        return "https://trade.mql5.com/trade";
+      case "CTRADER":
+        return "https://ct.spotware.com";
+      case "EDGETRADER":
+      case "AEROTRADER":
+      case "WEBTRADER":
+        return null;
+      default:
+        return null;
+    }
+  }
+  /**
+   * Safely decodes and hydrates a raw DB row or in-memory record into a full TradingAccountRecord
+   */
+  static hydrateAccountRecord(row) {
+    let demoPassword = row.password || null;
+    let demoBalance = row.balance !== void 0 && row.balance !== null ? String(row.balance) : row.is_demo ? "10000.00" : "0.00";
+    let terminalUrl = row.terminal_url || null;
+    let cleanInvestorNotes = row.investor_notes || null;
+    if (row.investor_notes && typeof row.investor_notes === "string" && row.investor_notes.startsWith("{")) {
+      try {
+        const meta3 = JSON.parse(row.investor_notes);
+        if (meta3.password !== void 0) demoPassword = meta3.password;
+        if (meta3.balance !== void 0) demoBalance = meta3.balance;
+        if (meta3.terminal_url !== void 0) terminalUrl = meta3.terminal_url;
+        if (meta3.notes !== void 0) cleanInvestorNotes = meta3.notes;
+      } catch {
+      }
+    }
+    if (row.is_demo) {
+      if (!demoBalance || demoBalance === "0" || demoBalance === "0.00") {
+        demoBalance = "10000.00";
+      }
+      if (!demoPassword) {
+        demoPassword = "Demo@" + (row.account_number ? String(row.account_number).slice(-4) : Math.floor(1e3 + Math.random() * 9e3));
+      }
+      if (!terminalUrl) {
+        terminalUrl = this.resolveDefaultTerminalUrl(row.platform);
+      }
+    }
+    return {
+      id: row.id,
+      account_number: String(row.account_number),
+      user_id: row.user_id,
+      platform: row.platform,
+      account_type: row.account_type,
+      server_name: row.server_name,
+      currency: row.currency,
+      leverage: row.leverage,
+      status: row.status,
+      nickname: row.nickname || null,
+      is_demo: Boolean(row.is_demo),
+      group_tier: row.group_tier || null,
+      investor_notes: cleanInvestorNotes,
+      admin_notes: row.admin_notes || null,
+      rejection_reason: row.rejection_reason || null,
+      approved_at: row.approved_at ? new Date(row.approved_at) : null,
+      approved_by: row.approved_by || null,
+      created_at: new Date(row.created_at),
+      updated_at: new Date(row.updated_at),
+      password: demoPassword,
+      balance: demoBalance,
+      terminal_url: terminalUrl
+    };
+  }
+  /**
+   * Parses auxiliary fields from a record's investor_notes or raw JSON
+   */
+  static parseMetadata(record2) {
+    if (!record2) return {};
+    const notes = typeof record2 === "string" ? record2 : record2.investor_notes;
+    if (notes && typeof notes === "string" && notes.startsWith("{")) {
+      try {
+        return JSON.parse(notes);
+      } catch {
+        return { notes };
+      }
+    }
+    return { notes: notes || null };
+  }
+  /**
+   * Serializes auxiliary fields into a JSON string to ensure compatibility with all database engines
+   */
+  static serializeMetadata(record2) {
+    if (!record2) return JSON.stringify({});
+    return JSON.stringify({
+      password: record2.password ?? record2.demo_password ?? null,
+      balance: record2.balance ?? null,
+      terminal_url: record2.terminal_url ?? null,
+      notes: record2.notes ?? record2.investor_notes ?? null,
+      ...record2
+    });
+  }
+  /**
+   * Provision default demo trading account for a new or existing client
+   */
+  static async provisionDefaultDemoAccount(userId, preferredCurrency = "USD", ip, userAgent) {
+    const now = /* @__PURE__ */ new Date();
+    const accountId = crypto4.randomUUID();
+    const accountNumber = this.generateAccountNumber(true);
+    const defaultPlatform = process.env.DEFAULT_TRADING_PLATFORM || "MT5";
+    const defaultServer = process.env.DEFAULT_DEMO_SERVER || `${defaultPlatform}-Demo-Server`;
+    const defaultTerminalUrl = this.resolveDefaultTerminalUrl(defaultPlatform);
+    const demoPassword = "Demo@" + Math.floor(1e3 + Math.random() * 9e3);
+    const initialBalance = "10000.00";
+    const currency = (preferredCurrency || "USD").toUpperCase();
+    const leverage = "1:100";
+    const newAccount = {
+      id: accountId,
+      account_number: accountNumber,
+      user_id: userId,
+      platform: defaultPlatform,
+      account_type: "standard",
+      server_name: defaultServer,
+      currency,
+      leverage,
+      status: "active",
+      nickname: "Default Demo Account",
+      is_demo: true,
+      group_tier: `demo_${currency.toLowerCase()}`,
+      investor_notes: null,
+      admin_notes: "System provisioned default demo account upon client registration",
+      rejection_reason: null,
+      approved_at: now,
+      approved_by: "SYSTEM",
+      created_at: now,
+      updated_at: now,
+      password: demoPassword,
+      balance: initialBalance,
+      terminal_url: defaultTerminalUrl
+    };
+    const pool2 = getPool();
+    if (pool2) {
+      const serializedNotes = this.serializeMetadata(newAccount);
+      await query(
+        `INSERT INTO trading_accounts 
+         (id, account_number, user_id, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, group_tier, investor_notes, admin_notes, created_at, updated_at, approved_at, approved_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+        [
+          newAccount.id,
+          newAccount.account_number,
+          newAccount.user_id,
+          newAccount.platform,
+          newAccount.account_type,
+          newAccount.server_name,
+          newAccount.currency,
+          newAccount.leverage,
+          newAccount.status,
+          newAccount.nickname,
+          newAccount.is_demo,
+          newAccount.group_tier,
+          serializedNotes,
+          newAccount.admin_notes,
+          newAccount.created_at,
+          newAccount.updated_at,
+          newAccount.approved_at,
+          newAccount.approved_by
+        ]
+      );
+    } else {
+      inMemoryDb.tradingAccounts.set(newAccount.id, { ...newAccount });
+    }
+    await this.recordAuditLog(
+      userId,
+      "DEMO_ACCOUNT_PROVISIONED",
+      newAccount.id,
+      {
+        account_number: newAccount.account_number,
+        platform: newAccount.platform,
+        account_type: newAccount.account_type,
+        currency: newAccount.currency,
+        leverage: newAccount.leverage,
+        balance: newAccount.balance,
+        server_name: newAccount.server_name,
+        status: newAccount.status,
+        is_demo: true,
+        terminal_url: newAccount.terminal_url
+      },
+      ip,
+      userAgent
+    );
+    return newAccount;
+  }
+  /**
+   * Register a new trading account request for a user
+   */
+  static async registerAccount(userId, input2, ip, userAgent) {
+    const now = /* @__PURE__ */ new Date();
+    const accountId = crypto4.randomUUID();
+    const accountNumber = this.generateAccountNumber(input2.is_demo);
+    const defaultServer = input2.server_name || (input2.is_demo ? `${input2.platform}-Demo-Server` : `${input2.platform}-Real-Server-1`);
+    const status = input2.is_demo ? "active" : "pending_approval";
+    const demoPassword = input2.is_demo ? "Demo@" + Math.floor(1e3 + Math.random() * 9e3) : null;
+    const demoBalance = input2.is_demo ? "10000.00" : "0.00";
+    const terminalUrl = input2.is_demo ? this.resolveDefaultTerminalUrl(input2.platform) : null;
+    const newAccount = {
+      id: accountId,
+      account_number: accountNumber,
+      user_id: userId,
+      platform: input2.platform,
+      account_type: input2.account_type,
+      server_name: defaultServer,
+      currency: input2.currency.toUpperCase(),
+      leverage: input2.leverage,
+      status,
+      nickname: input2.nickname?.trim() || null,
+      is_demo: input2.is_demo,
+      group_tier: `${input2.account_type}_${input2.currency.toLowerCase()}`,
+      created_at: now,
+      updated_at: now,
+      approved_at: input2.is_demo ? now : null,
+      approved_by: input2.is_demo ? "SYSTEM" : null,
+      password: demoPassword,
+      balance: demoBalance,
+      terminal_url: terminalUrl
+    };
+    const pool2 = getPool();
+    if (pool2) {
+      const serializedNotes = this.serializeMetadata(newAccount);
+      await query(
+        `INSERT INTO trading_accounts 
+         (id, account_number, user_id, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, group_tier, investor_notes, created_at, updated_at, approved_at, approved_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+        [
+          newAccount.id,
+          newAccount.account_number,
+          newAccount.user_id,
+          newAccount.platform,
+          newAccount.account_type,
+          newAccount.server_name,
+          newAccount.currency,
+          newAccount.leverage,
+          newAccount.status,
+          newAccount.nickname,
+          newAccount.is_demo,
+          newAccount.group_tier,
+          serializedNotes,
+          newAccount.created_at,
+          newAccount.updated_at,
+          newAccount.approved_at,
+          newAccount.approved_by
+        ]
+      );
+    } else {
+      inMemoryDb.tradingAccounts.set(newAccount.id, { ...newAccount });
+    }
+    await this.recordAuditLog(
+      userId,
+      "TRADING_ACCOUNT_REGISTERED",
+      newAccount.id,
+      {
+        account_number: newAccount.account_number,
+        platform: newAccount.platform,
+        account_type: newAccount.account_type,
+        currency: newAccount.currency,
+        leverage: newAccount.leverage,
+        is_demo: newAccount.is_demo,
+        status: newAccount.status
+      },
+      ip,
+      userAgent
+    );
+    return newAccount;
+  }
+  /**
+   * Link an existing external trading account to the user's CRM profile
+   */
+  static async linkExistingAccount(userId, input2, ip, userAgent) {
+    const cleanAccountNumber = input2.account_number.trim();
+    const pool2 = getPool();
+    if (pool2) {
+      const existing = await query(
+        `SELECT * FROM trading_accounts 
+         WHERE account_number = $1 AND platform = $2 AND status != 'archived'`,
+        [cleanAccountNumber, input2.platform]
+      );
+      if (existing.length > 0) {
+        throw new Error("This trading account number is already linked or pending review in the CRM");
+      }
+    } else {
+      for (const acc of inMemoryDb.tradingAccounts.values()) {
+        if (acc.account_number === cleanAccountNumber && acc.platform === input2.platform && acc.status !== "archived") {
+          throw new Error("This trading account number is already linked or pending review in the CRM");
+        }
+      }
+    }
+    const now = /* @__PURE__ */ new Date();
+    const accountId = crypto4.randomUUID();
+    const linkedAccount = {
+      id: accountId,
+      account_number: cleanAccountNumber,
+      user_id: userId,
+      platform: input2.platform,
+      account_type: input2.account_type,
+      server_name: input2.server_name.trim(),
+      currency: input2.currency.toUpperCase(),
+      leverage: input2.leverage,
+      status: "pending_approval",
+      nickname: input2.nickname?.trim() || null,
+      is_demo: false,
+      investor_notes: input2.investor_notes?.trim() || null,
+      group_tier: `${input2.account_type}_${input2.currency.toLowerCase()}`,
+      created_at: now,
+      updated_at: now
+    };
+    if (pool2) {
+      await query(
+        `INSERT INTO trading_accounts 
+         (id, account_number, user_id, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, investor_notes, group_tier, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+        [
+          linkedAccount.id,
+          linkedAccount.account_number,
+          linkedAccount.user_id,
+          linkedAccount.platform,
+          linkedAccount.account_type,
+          linkedAccount.server_name,
+          linkedAccount.currency,
+          linkedAccount.leverage,
+          linkedAccount.status,
+          linkedAccount.nickname,
+          linkedAccount.is_demo,
+          linkedAccount.investor_notes,
+          linkedAccount.group_tier,
+          linkedAccount.created_at,
+          linkedAccount.updated_at
+        ]
+      );
+    } else {
+      inMemoryDb.tradingAccounts.set(linkedAccount.id, linkedAccount);
+    }
+    await this.recordAuditLog(
+      userId,
+      "TRADING_ACCOUNT_LINK_REQUESTED",
+      linkedAccount.id,
+      {
+        account_number: linkedAccount.account_number,
+        platform: linkedAccount.platform,
+        server_name: linkedAccount.server_name,
+        currency: linkedAccount.currency,
+        status: linkedAccount.status
+      },
+      ip,
+      userAgent
+    );
+    return linkedAccount;
+  }
+  /**
+   * Get all trading accounts owned by a specific user (Client view)
+   */
+  static async getUserAccounts(userId) {
+    const pool2 = getPool();
+    let accounts = [];
+    if (pool2) {
+      const rows = await query(
+        `SELECT * FROM trading_accounts WHERE user_id = $1 AND status != 'archived' ORDER BY created_at DESC`,
+        [userId]
+      );
+      accounts = rows.map((r5) => this.hydrateAccountRecord(r5));
+    } else {
+      const results = [];
+      for (const acc of inMemoryDb.tradingAccounts.values()) {
+        if (acc.user_id === userId && acc.status !== "archived") {
+          results.push(this.hydrateAccountRecord(acc));
+        }
+      }
+      accounts = results.sort((a5, b5) => b5.created_at.getTime() - a5.created_at.getTime());
+    }
+    if (accounts.length === 0) {
+      try {
+        const defaultDemo = await this.provisionDefaultDemoAccount(userId);
+        accounts = [defaultDemo];
+      } catch (err) {
+        console.error("Error auto-provisioning demo account for client:", err);
+      }
+    }
+    return accounts;
+  }
+  /**
+   * Get a single trading account by ID with strict IDOR ownership check
+   */
+  static async getUserAccountById(userId, accountId) {
+    const account = await this.findRawAccount(accountId);
+    if (!account) {
+      const err = new Error("Trading account not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    if (account.user_id !== userId) {
+      const err = new Error("Access forbidden: you do not have permission to access this trading account");
+      err.statusCode = 403;
+      throw err;
+    }
+    return account;
+  }
+  /**
+   * Update nickname/display label of a trading account with strict IDOR ownership check
+   */
+  static async updateUserAccountNickname(userId, accountId, nickname, ip, userAgent) {
+    const account = await this.getUserAccountById(userId, accountId);
+    const updatedNickname = nickname?.trim() || null;
+    const now = /* @__PURE__ */ new Date();
+    const pool2 = getPool();
+    if (pool2) {
+      await query(
+        `UPDATE trading_accounts SET nickname = $1, updated_at = $2 WHERE id = $3`,
+        [updatedNickname, now, accountId]
+      );
+    } else {
+      const record2 = inMemoryDb.tradingAccounts.get(accountId);
+      if (record2) {
+        record2.nickname = updatedNickname;
+        record2.updated_at = now;
+      }
+    }
+    account.nickname = updatedNickname;
+    account.updated_at = now;
+    await this.recordAuditLog(
+      userId,
+      "TRADING_ACCOUNT_NICKNAME_UPDATED",
+      accountId,
+      {
+        account_number: account.account_number,
+        nickname: updatedNickname
+      },
+      ip,
+      userAgent
+    );
+    return account;
+  }
+  /**
+   * Request leverage change on a trading account with strict IDOR ownership check
+   */
+  static async requestLeverageChange(userId, accountId, requestedLeverage, reason, ip, userAgent) {
+    const account = await this.getUserAccountById(userId, accountId);
+    if (account.status === "archived" || account.status === "disabled") {
+      const err = new Error(`Cannot request leverage change on an account with status '${account.status}'`);
+      err.statusCode = 400;
+      throw err;
+    }
+    await this.recordAuditLog(
+      userId,
+      "TRADING_ACCOUNT_LEVERAGE_CHANGE_REQUESTED",
+      accountId,
+      {
+        account_number: account.account_number,
+        current_leverage: account.leverage,
+        requested_leverage: requestedLeverage,
+        reason: reason || null
+      },
+      ip,
+      userAgent
+    );
+    return {
+      message: `Leverage change request to ${requestedLeverage} submitted for administrative review`,
+      account
+    };
+  }
+  // =========================================================================
+  // ADMIN WORKFLOWS
+  // =========================================================================
+  /**
+   * List all trading accounts across the broker with search and filters (Admin view)
+   */
+  static async getAllAccountsAdmin(filters = {}) {
+    const pool2 = getPool();
+    if (pool2) {
+      let sql = `
+        SELECT ta.*, u.first_name, u.last_name, u.email, u.country
+        FROM trading_accounts ta
+        JOIN users u ON ta.user_id = u.id
+        WHERE 1=1
+      `;
+      const params = [];
+      if (filters.status) {
+        params.push(filters.status);
+        sql += ` AND ta.status = $${params.length}`;
+      }
+      if (filters.platform) {
+        params.push(filters.platform);
+        sql += ` AND ta.platform = $${params.length}`;
+      }
+      if (filters.user_id) {
+        params.push(filters.user_id);
+        sql += ` AND ta.user_id = $${params.length}`;
+      }
+      if (filters.search) {
+        params.push(`%${filters.search.toLowerCase()}%`);
+        sql += ` AND (LOWER(ta.account_number) LIKE $${params.length} OR LOWER(u.email) LIKE $${params.length} OR LOWER(ta.nickname) LIKE $${params.length})`;
+      }
+      sql += ` ORDER BY ta.created_at DESC`;
+      const rows = await query(sql, params);
+      return rows.map((r5) => {
+        const hydrated = this.hydrateAccountRecord(r5);
+        return {
+          ...hydrated,
+          owner: {
+            id: r5.user_id,
+            first_name: r5.first_name,
+            last_name: r5.last_name,
+            email: r5.email,
+            country: r5.country
+          }
+        };
+      });
+    }
+    const results = [];
+    for (const acc of inMemoryDb.tradingAccounts.values()) {
+      if (filters.status && acc.status !== filters.status) continue;
+      if (filters.platform && acc.platform !== filters.platform) continue;
+      if (filters.user_id && acc.user_id !== filters.user_id) continue;
+      let owner = void 0;
+      for (const u of inMemoryDb.users.values()) {
+        if (u.id === acc.user_id) {
+          owner = u;
+          break;
+        }
+      }
+      if (filters.search) {
+        const term = filters.search.toLowerCase();
+        const matchNum = acc.account_number.toLowerCase().includes(term);
+        const matchNick = acc.nickname?.toLowerCase().includes(term);
+        const matchEmail = owner?.email.toLowerCase().includes(term);
+        if (!matchNum && !matchNick && !matchEmail) continue;
+      }
+      const hydrated = this.hydrateAccountRecord(acc);
+      results.push({
+        ...hydrated,
+        owner: owner ? {
+          id: owner.id,
+          first_name: owner.first_name,
+          last_name: owner.last_name,
+          email: owner.email,
+          country: owner.country
+        } : void 0
+      });
+    }
+    return results.sort((a5, b5) => b5.created_at.getTime() - a5.created_at.getTime());
+  }
+  /**
+   * Get single trading account detail with owner and audit logs (Admin view)
+   */
+  static async getAccountByIdAdmin(accountId) {
+    const account = await this.findRawAccount(accountId);
+    if (!account) {
+      const err = new Error("Trading account not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    let owner = void 0;
+    const pool2 = getPool();
+    if (pool2) {
+      const userRows = await query(`SELECT * FROM users WHERE id = $1`, [account.user_id]);
+      owner = userRows[0];
+    } else {
+      for (const u of inMemoryDb.users.values()) {
+        if (u.id === account.user_id) {
+          owner = u;
+          break;
+        }
+      }
+    }
+    let auditLogs = [];
+    if (pool2) {
+      auditLogs = await query(
+        `SELECT * FROM audit_logs WHERE entity_type = 'trading_account' AND entity_id = $1 ORDER BY created_at DESC`,
+        [accountId]
+      );
+    } else {
+      auditLogs = inMemoryDb.auditLogs.filter(
+        (log3) => log3.entity_type === "trading_account" && log3.entity_id === accountId
+      );
+    }
+    return {
+      account: {
+        ...account,
+        owner: owner ? {
+          id: owner.id,
+          first_name: owner.first_name,
+          last_name: owner.last_name,
+          email: owner.email,
+          country: owner.country
+        } : void 0
+      },
+      audit_trail: auditLogs
+    };
+  }
+  /**
+   * Approve a pending trading account (Admin workflow)
+   */
+  static async approveAccount(adminId, accountId, input2, ip, userAgent) {
+    const account = await this.findRawAccount(accountId);
+    if (!account) {
+      const err = new Error("Trading account not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    if (account.status === "active") {
+      const err = new Error("This trading account is already active");
+      err.statusCode = 400;
+      throw err;
+    }
+    const now = /* @__PURE__ */ new Date();
+    const updatedAccountNumber = input2.account_number?.trim() || account.account_number;
+    const updatedServer = input2.server_name?.trim() || account.server_name;
+    const updatedGroupTier = input2.group_tier?.trim() || account.group_tier;
+    const adminNotes = input2.admin_notes?.trim() || account.admin_notes;
+    const pool2 = getPool();
+    if (pool2) {
+      await query(
+        `UPDATE trading_accounts 
+         SET status = 'active', account_number = $1, server_name = $2, group_tier = $3, admin_notes = $4, approved_at = $5, approved_by = $6, updated_at = $5
+         WHERE id = $7`,
+        [updatedAccountNumber, updatedServer, updatedGroupTier, adminNotes, now, adminId, accountId]
+      );
+    } else {
+      const record2 = inMemoryDb.tradingAccounts.get(accountId);
+      if (record2) {
+        record2.status = "active";
+        record2.account_number = updatedAccountNumber;
+        record2.server_name = updatedServer;
+        record2.group_tier = updatedGroupTier;
+        record2.admin_notes = adminNotes;
+        record2.approved_at = now;
+        record2.approved_by = adminId;
+        record2.updated_at = now;
+      }
+    }
+    account.status = "active";
+    account.account_number = updatedAccountNumber;
+    account.server_name = updatedServer;
+    account.group_tier = updatedGroupTier;
+    account.admin_notes = adminNotes;
+    account.approved_at = now;
+    account.approved_by = adminId;
+    account.updated_at = now;
+    await this.recordAuditLog(
+      adminId,
+      "TRADING_ACCOUNT_APPROVED",
+      accountId,
+      {
+        account_number: account.account_number,
+        server_name: account.server_name,
+        group_tier: account.group_tier,
+        admin_notes: adminNotes
+      },
+      ip,
+      userAgent
+    );
+    await NotificationService.createNotification(
+      account.user_id,
+      "Trading Account Approved",
+      `Your trading account #${account.account_number} (${account.platform}) is now active.`,
+      "trading_account",
+      { account_id: account.id, account_number: account.account_number, platform: account.platform }
+    );
+    return account;
+  }
+  /**
+   * Reject a pending trading account (Admin workflow)
+   */
+  static async rejectAccount(adminId, accountId, input2, ip, userAgent) {
+    const account = await this.findRawAccount(accountId);
+    if (!account) {
+      const err = new Error("Trading account not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    const now = /* @__PURE__ */ new Date();
+    const rejectionReason = input2.rejection_reason.trim();
+    const adminNotes = input2.admin_notes?.trim() || account.admin_notes;
+    const pool2 = getPool();
+    if (pool2) {
+      await query(
+        `UPDATE trading_accounts 
+         SET status = 'disabled', rejection_reason = $1, admin_notes = $2, updated_at = $3
+         WHERE id = $4`,
+        [rejectionReason, adminNotes, now, accountId]
+      );
+    } else {
+      const record2 = inMemoryDb.tradingAccounts.get(accountId);
+      if (record2) {
+        record2.status = "disabled";
+        record2.rejection_reason = rejectionReason;
+        record2.admin_notes = adminNotes;
+        record2.updated_at = now;
+      }
+    }
+    account.status = "disabled";
+    account.rejection_reason = rejectionReason;
+    account.admin_notes = adminNotes;
+    account.updated_at = now;
+    await this.recordAuditLog(
+      adminId,
+      "TRADING_ACCOUNT_REJECTED",
+      accountId,
+      {
+        account_number: account.account_number,
+        rejection_reason: rejectionReason,
+        admin_notes: adminNotes
+      },
+      ip,
+      userAgent
+    );
+    await NotificationService.createNotification(
+      account.user_id,
+      "Trading Account Application Rejected",
+      `Your trading account registration was rejected. Reason: ${rejectionReason}`,
+      "trading_account",
+      { account_id: account.id, rejection_reason: rejectionReason }
+    );
+    return account;
+  }
+  /**
+   * Change account status (e.g. active, read_only, disabled, archived) (Admin workflow)
+   */
+  static async updateAccountStatus(adminId, accountId, newStatus, adminNotes, ip, userAgent) {
+    const account = await this.findRawAccount(accountId);
+    if (!account) {
+      const err = new Error("Trading account not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    const oldStatus = account.status;
+    const now = /* @__PURE__ */ new Date();
+    const notes = adminNotes?.trim() || account.admin_notes;
+    const pool2 = getPool();
+    if (pool2) {
+      await query(
+        `UPDATE trading_accounts SET status = $1, admin_notes = $2, updated_at = $3 WHERE id = $4`,
+        [newStatus, notes, now, accountId]
+      );
+    } else {
+      const record2 = inMemoryDb.tradingAccounts.get(accountId);
+      if (record2) {
+        record2.status = newStatus;
+        record2.admin_notes = notes;
+        record2.updated_at = now;
+      }
+    }
+    account.status = newStatus;
+    account.admin_notes = notes;
+    account.updated_at = now;
+    await this.recordAuditLog(
+      adminId,
+      "TRADING_ACCOUNT_STATUS_CHANGED",
+      accountId,
+      {
+        account_number: account.account_number,
+        previous_status: oldStatus,
+        new_status: newStatus,
+        admin_notes: notes
+      },
+      ip,
+      userAgent
+    );
+    return account;
+  }
+  /**
+   * Update trading account metadata such as login, password, platform, server name, leverage, balance, status, terminal URL, etc. (Admin workflow)
+   */
+  static async updateMetadataAdmin(adminId, accountId, input2, ip, userAgent) {
+    const account = await this.findRawAccount(accountId);
+    if (!account) {
+      const err = new Error("Trading account not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    const now = /* @__PURE__ */ new Date();
+    const updatedAccountNumber = input2.account_number?.trim() || account.account_number;
+    const updatedPlatform = input2.platform?.trim() || account.platform;
+    const updatedServer = input2.server_name !== void 0 ? input2.server_name?.trim() || "" : account.server_name;
+    const updatedCurrency = input2.currency ? input2.currency.trim().toUpperCase() : account.currency;
+    const updatedLeverage = input2.leverage || account.leverage;
+    const updatedBalance = input2.balance !== void 0 ? input2.balance.trim() : account.balance || (account.is_demo ? "10000.00" : "0.00");
+    const updatedStatus = input2.status || account.status;
+    const updatedTerminalUrl = input2.terminal_url !== void 0 ? input2.terminal_url?.trim() || null : account.terminal_url || null;
+    const updatedGroupTier = input2.group_tier !== void 0 ? input2.group_tier?.trim() || null : account.group_tier;
+    const updatedType = input2.account_type || account.account_type;
+    const updatedAdminNotes = input2.admin_notes !== void 0 ? input2.admin_notes?.trim() || null : account.admin_notes;
+    const updatedNickname = input2.nickname !== void 0 ? input2.nickname?.trim() || null : account.nickname;
+    const updatedPassword = input2.password !== void 0 ? input2.password?.trim() || null : account.password;
+    account.account_number = updatedAccountNumber;
+    account.platform = updatedPlatform;
+    account.server_name = updatedServer;
+    account.currency = updatedCurrency;
+    account.leverage = updatedLeverage;
+    account.balance = updatedBalance;
+    account.status = updatedStatus;
+    account.terminal_url = updatedTerminalUrl;
+    account.group_tier = updatedGroupTier;
+    account.account_type = updatedType;
+    account.admin_notes = updatedAdminNotes;
+    account.nickname = updatedNickname;
+    account.password = updatedPassword;
+    account.updated_at = now;
+    const pool2 = getPool();
+    if (pool2) {
+      const serializedNotes = this.serializeMetadata(account);
+      await query(
+        `UPDATE trading_accounts 
+         SET account_number = $1, platform = $2, server_name = $3, currency = $4, leverage = $5, status = $6, group_tier = $7, account_type = $8, admin_notes = $9, nickname = $10, investor_notes = $11, updated_at = $12
+         WHERE id = $13`,
+        [
+          updatedAccountNumber,
+          updatedPlatform,
+          updatedServer,
+          updatedCurrency,
+          updatedLeverage,
+          updatedStatus,
+          updatedGroupTier,
+          updatedType,
+          updatedAdminNotes,
+          updatedNickname,
+          serializedNotes,
+          now,
+          accountId
+        ]
+      );
+    } else {
+      const record2 = inMemoryDb.tradingAccounts.get(accountId);
+      if (record2) {
+        Object.assign(record2, account);
+      }
+    }
+    await this.recordAuditLog(
+      adminId,
+      "TRADING_ACCOUNT_METADATA_UPDATED",
+      accountId,
+      {
+        account_number: account.account_number,
+        platform: account.platform,
+        server_name: account.server_name,
+        currency: account.currency,
+        leverage: account.leverage,
+        balance: account.balance,
+        status: account.status,
+        terminal_url: account.terminal_url,
+        group_tier: account.group_tier,
+        account_type: account.account_type,
+        password_changed: input2.password !== void 0,
+        admin_notes: updatedAdminNotes
+      },
+      ip,
+      userAgent
+    );
+    return account;
+  }
+  /**
+   * Updates balance of a trading account (used by financial transfer approval workflow)
+   */
+  static async updateAccountBalance(accountId, newBalance) {
+    const account = await this.findRawAccount(accountId);
+    if (!account) {
+      const err = new Error("Trading account not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    const now = /* @__PURE__ */ new Date();
+    account.balance = newBalance;
+    account.updated_at = now;
+    const pool2 = getPool();
+    if (pool2) {
+      const serializedNotes = this.serializeMetadata(account);
+      try {
+        await query(
+          `UPDATE trading_accounts 
+           SET balance = $1, investor_notes = $2, updated_at = $3
+           WHERE id = $4`,
+          [newBalance, serializedNotes, now, accountId]
+        );
+      } catch (err) {
+        await query(
+          `UPDATE trading_accounts 
+           SET investor_notes = $1, updated_at = $2
+           WHERE id = $3`,
+          [serializedNotes, now, accountId]
+        );
+      }
+    } else {
+      const record2 = inMemoryDb.tradingAccounts.get(accountId);
+      if (record2) {
+        record2.balance = newBalance;
+        record2.updated_at = now;
+        record2.investor_notes = this.serializeMetadata(record2);
+      }
+    }
+    return account;
+  }
+  /**
+   * Helper to fetch an account record without ownership checks (for admin & internal service operations)
+   */
+  static async findRawAccount(accountId) {
+    const pool2 = getPool();
+    if (pool2) {
+      const rows = await query(
+        `SELECT * FROM trading_accounts WHERE id = $1`,
+        [accountId]
+      );
+      return rows[0] ? this.hydrateAccountRecord(rows[0]) : null;
+    }
+    const record2 = inMemoryDb.tradingAccounts.get(accountId);
+    return record2 ? this.hydrateAccountRecord(record2) : null;
+  }
+  /**
+   * Admin-only trading account deletion or archiving.
+   * Checks for ownership, pending transfers, active balance, and financial history.
+   * If the trading account has financial transfer history, it is archived to preserve
+   * immutable ledger records for regulatory compliance.
+   * If it has no financial history, it is cleanly deleted.
+   */
+  static async deleteAccountAdmin(adminUserId, accountId, ip, userAgent) {
+    const pool2 = getPool();
+    if (pool2) {
+      const accRows = await query(`SELECT * FROM trading_accounts WHERE id = $1`, [accountId]);
+      if (accRows.length === 0) {
+        const err = new Error("Trading account not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      const rawAccount = accRows[0];
+      const account = this.hydrateAccountRecord(rawAccount);
+      const pendingTransfers = await query(
+        `SELECT id FROM account_transfers WHERE trading_account_id = $1 AND status = 'pending'`,
+        [accountId]
+      );
+      if (pendingTransfers.length > 0) {
+        const err = new Error("Cannot delete trading account with pending transfer requests. Please approve or reject pending transfers first.");
+        err.statusCode = 400;
+        throw err;
+      }
+      if (!account.is_demo && parseFloat(account.balance || "0") > 0) {
+        const err = new Error(`Cannot delete trading account with active balance (${account.balance} ${account.currency}). Transfer or settle balance first.`);
+        err.statusCode = 400;
+        throw err;
+      }
+      const transferCountRows = await query(
+        `SELECT COUNT(*) as count FROM account_transfers WHERE trading_account_id = $1`,
+        [accountId]
+      );
+      const transferCount = parseInt(transferCountRows[0]?.count || "0", 10);
+      if (transferCount > 0) {
+        const now = /* @__PURE__ */ new Date();
+        const meta3 = this.parseMetadata(rawAccount);
+        meta3.archived_at = now.toISOString();
+        meta3.archived_by = adminUserId;
+        meta3.archive_reason = "Archived via admin delete workflow to retain transfer history";
+        const serialized = this.serializeMetadata(meta3);
+        await query(
+          `UPDATE trading_accounts SET status = 'archived', investor_notes = $1, updated_at = $2 WHERE id = $3`,
+          [serialized, now, accountId]
+        );
+        await this.recordAuditLog(
+          adminUserId,
+          "TRADING_ACCOUNT_ARCHIVED",
+          accountId,
+          {
+            account_id: accountId,
+            account_number: account.account_number,
+            user_id: account.user_id,
+            transfer_count_retained: transferCount,
+            reason: "Account archived to preserve financial transfer ledger history"
+          },
+          ip,
+          userAgent
+        );
+        return {
+          success: true,
+          action: "archived",
+          message: "Trading account archived. Financial transfer history has been preserved for regulatory compliance.",
+          account_id: accountId
+        };
+      } else {
+        await query(`DELETE FROM trading_password_resets WHERE trading_account_id = $1`, [accountId]);
+        await query(`DELETE FROM trading_accounts WHERE id = $1`, [accountId]);
+        await this.recordAuditLog(
+          adminUserId,
+          "TRADING_ACCOUNT_DELETED",
+          accountId,
+          {
+            account_id: accountId,
+            account_number: account.account_number,
+            user_id: account.user_id,
+            reason: "Trading account deleted with zero prior transfer history"
+          },
+          ip,
+          userAgent
+        );
+        return {
+          success: true,
+          action: "deleted",
+          message: "Trading account deleted successfully.",
+          account_id: accountId
+        };
+      }
+    } else {
+      const record2 = inMemoryDb.tradingAccounts.get(accountId);
+      if (!record2) {
+        const err = new Error("Trading account not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      const account = this.hydrateAccountRecord(record2);
+      const pendingTransfers = Array.from(inMemoryDb.accountTransfers.values()).filter(
+        (tr) => tr.trading_account_id === accountId && tr.status === "pending"
+      );
+      if (pendingTransfers.length > 0) {
+        const err = new Error("Cannot delete trading account with pending transfer requests. Please approve or reject pending transfers first.");
+        err.statusCode = 400;
+        throw err;
+      }
+      if (!account.is_demo && parseFloat(account.balance || "0") > 0) {
+        const err = new Error(`Cannot delete trading account with active balance (${account.balance} ${account.currency}). Transfer or settle balance first.`);
+        err.statusCode = 400;
+        throw err;
+      }
+      const transferCount = Array.from(inMemoryDb.accountTransfers.values()).filter(
+        (tr) => tr.trading_account_id === accountId
+      ).length;
+      if (transferCount > 0) {
+        record2.status = "archived";
+        record2.updated_at = /* @__PURE__ */ new Date();
+        const meta3 = this.parseMetadata(record2);
+        meta3.archived_at = (/* @__PURE__ */ new Date()).toISOString();
+        meta3.archived_by = adminUserId;
+        meta3.archive_reason = "Archived via admin delete workflow to retain transfer history";
+        record2.investor_notes = this.serializeMetadata(meta3);
+        await this.recordAuditLog(
+          adminUserId,
+          "TRADING_ACCOUNT_ARCHIVED",
+          accountId,
+          {
+            account_id: accountId,
+            account_number: account.account_number,
+            user_id: account.user_id,
+            transfer_count_retained: transferCount,
+            reason: "Account archived to preserve financial transfer ledger history"
+          },
+          ip,
+          userAgent
+        );
+        return {
+          success: true,
+          action: "archived",
+          message: "Trading account archived. Financial transfer history has been preserved for regulatory compliance.",
+          account_id: accountId
+        };
+      } else {
+        for (const [id, r5] of inMemoryDb.tradingPasswordResets.entries()) {
+          if (r5.trading_account_id === accountId) inMemoryDb.tradingPasswordResets.delete(id);
+        }
+        inMemoryDb.tradingAccounts.delete(accountId);
+        await this.recordAuditLog(
+          adminUserId,
+          "TRADING_ACCOUNT_DELETED",
+          accountId,
+          {
+            account_id: accountId,
+            account_number: account.account_number,
+            user_id: account.user_id,
+            reason: "Trading account deleted with zero prior transfer history"
+          },
+          ip,
+          userAgent
+        );
+        return {
+          success: true,
+          action: "deleted",
+          message: "Trading account deleted successfully.",
+          account_id: accountId
+        };
+      }
+    }
+  }
+  /**
+   * Admin-only assignment / mapping of a trading account to a client.
+   * Verifies target client exists and is a client, updates user_id mapping,
+   * and records an audit log.
+   */
+  static async assignAccountToClientAdmin(adminUserId, accountId, targetClientId, ip, userAgent) {
+    const pool2 = getPool();
+    let previousUserId = "";
+    let accountNum = "";
+    if (pool2) {
+      const clientRows = await query(`SELECT id, role, email FROM users WHERE id = $1`, [targetClientId]);
+      if (clientRows.length === 0 || clientRows[0].role !== "client") {
+        const err = new Error("Target client account not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      const accRows = await query(`SELECT * FROM trading_accounts WHERE id = $1`, [accountId]);
+      if (accRows.length === 0) {
+        const err = new Error("Trading account not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      previousUserId = accRows[0].user_id;
+      accountNum = accRows[0].account_number;
+      await query(
+        `UPDATE trading_accounts SET user_id = $1, updated_at = NOW() WHERE id = $2`,
+        [targetClientId, accountId]
+      );
+    } else {
+      const targetUser = Array.from(inMemoryDb.users.values()).find((u) => u.id === targetClientId);
+      if (!targetUser || targetUser.role !== "client") {
+        const err = new Error("Target client account not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      const record2 = inMemoryDb.tradingAccounts.get(accountId);
+      if (!record2) {
+        const err = new Error("Trading account not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      previousUserId = record2.user_id;
+      accountNum = record2.account_number;
+      record2.user_id = targetClientId;
+      record2.updated_at = /* @__PURE__ */ new Date();
+    }
+    await this.recordAuditLog(
+      adminUserId,
+      "TRADING_ACCOUNT_ASSIGNED",
+      accountId,
+      {
+        account_id: accountId,
+        account_number: accountNum,
+        previous_user_id: previousUserId,
+        new_user_id: targetClientId
+      },
+      ip,
+      userAgent
+    );
+    const updated = await this.getAccountByIdAdmin(accountId);
+    return updated;
+  }
+  /**
+   * Client-side trading password reset REQUEST workflow.
+   * Strict IDOR protection: verified against requesting user's account.
+   * Does NOT change password automatically; creates a pending request for admin review.
+   */
+  static async requestPasswordReset(userId, accountId, reason, ip, userAgent) {
+    const account = await this.getUserAccountById(userId, accountId);
+    if (!account) {
+      const err = new Error("Trading account not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    if (account.status === "archived" || account.status === "disabled") {
+      const err = new Error(`Cannot request password reset for account with status '${account.status}'.`);
+      err.statusCode = 400;
+      throw err;
+    }
+    const pool2 = getPool();
+    const requestId = crypto4.randomUUID();
+    const now = /* @__PURE__ */ new Date();
+    if (pool2) {
+      const existingPending = await query(
+        `SELECT id FROM trading_password_resets WHERE trading_account_id = $1 AND status = 'pending'`,
+        [accountId]
+      );
+      if (existingPending.length > 0) {
+        const err = new Error("A password reset request for this trading account is already pending administrative review.");
+        err.statusCode = 400;
+        throw err;
+      }
+      const rows = await query(
+        `INSERT INTO trading_password_resets (id, trading_account_id, user_id, account_number, status, reason, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'pending', $5, $6, $6)
+         RETURNING *`,
+        [requestId, accountId, userId, account.account_number, reason?.trim() || null, now]
+      );
+      await this.recordAuditLog(
+        userId,
+        "TRADING_PASSWORD_RESET_REQUESTED",
+        accountId,
+        {
+          request_id: requestId,
+          account_id: accountId,
+          account_number: account.account_number,
+          reason: reason?.trim() || null
+        },
+        ip,
+        userAgent
+      );
+      await NotificationService.createNotification(
+        userId,
+        "Trading Password Reset Requested",
+        `Your password reset request for trading account #${account.account_number} has been submitted and is pending administrative review.`,
+        "trading_account",
+        { account_id: accountId, request_id: requestId }
+      );
+      return rows[0];
+    } else {
+      const existingPending = Array.from(inMemoryDb.tradingPasswordResets.values()).find(
+        (r5) => r5.trading_account_id === accountId && r5.status === "pending"
+      );
+      if (existingPending) {
+        const err = new Error("A password reset request for this trading account is already pending administrative review.");
+        err.statusCode = 400;
+        throw err;
+      }
+      const record2 = {
+        id: requestId,
+        trading_account_id: accountId,
+        user_id: userId,
+        account_number: account.account_number,
+        status: "pending",
+        reason: reason?.trim() || null,
+        admin_notes: null,
+        processed_by: null,
+        processed_at: null,
+        created_at: now,
+        updated_at: now
+      };
+      inMemoryDb.tradingPasswordResets.set(requestId, record2);
+      await this.recordAuditLog(
+        userId,
+        "TRADING_PASSWORD_RESET_REQUESTED",
+        accountId,
+        {
+          request_id: requestId,
+          account_id: accountId,
+          account_number: account.account_number,
+          reason: reason?.trim() || null
+        },
+        ip,
+        userAgent
+      );
+      await NotificationService.createNotification(
+        userId,
+        "Trading Password Reset Requested",
+        `Your password reset request for trading account #${account.account_number} has been submitted and is pending administrative review.`,
+        "trading_account",
+        { account_id: accountId, request_id: requestId }
+      );
+      return record2;
+    }
+  }
+  /**
+   * Client: List own trading account password reset requests
+   */
+  static async getUserPasswordResets(userId) {
+    const pool2 = getPool();
+    if (pool2) {
+      const rows = await query(
+        `SELECT * FROM trading_password_resets WHERE user_id = $1 ORDER BY created_at DESC`,
+        [userId]
+      );
+      return rows;
+    } else {
+      return Array.from(inMemoryDb.tradingPasswordResets.values()).filter((r5) => r5.user_id === userId).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime());
+    }
+  }
+  /**
+   * Admin: List all password reset requests with user and account metadata
+   */
+  static async getAllPasswordResetsAdmin(filters) {
+    const pool2 = getPool();
+    if (pool2) {
+      let sql = `
+        SELECT r.*,
+               u.first_name as client_first_name, u.last_name as client_last_name, u.email as client_email,
+               ta.platform, ta.server_name, ta.is_demo, ta.currency, ta.balance
+        FROM trading_password_resets r
+        JOIN users u ON u.id = r.user_id
+        LEFT JOIN trading_accounts ta ON ta.id = r.trading_account_id
+        WHERE 1=1
+      `;
+      const params = [];
+      if (filters?.status) {
+        params.push(filters.status);
+        sql += ` AND r.status = $${params.length}`;
+      }
+      if (filters?.search) {
+        params.push(`%${filters.search.toLowerCase()}%`);
+        sql += ` AND (LOWER(r.account_number) LIKE $${params.length} OR LOWER(u.email) LIKE $${params.length} OR LOWER(u.first_name) LIKE $${params.length} OR LOWER(u.last_name) LIKE $${params.length})`;
+      }
+      sql += ` ORDER BY r.created_at DESC`;
+      return await query(sql, params);
+    } else {
+      let list2 = Array.from(inMemoryDb.tradingPasswordResets.values());
+      if (filters?.status) {
+        list2 = list2.filter((r5) => r5.status === filters.status);
+      }
+      if (filters?.search) {
+        const s2 = filters.search.toLowerCase();
+        list2 = list2.filter((r5) => {
+          const user = Array.from(inMemoryDb.users.values()).find((u) => u.id === r5.user_id);
+          return r5.account_number.toLowerCase().includes(s2) || user && (user.email.toLowerCase().includes(s2) || user.first_name.toLowerCase().includes(s2) || user.last_name.toLowerCase().includes(s2));
+        });
+      }
+      return list2.map((r5) => {
+        const user = Array.from(inMemoryDb.users.values()).find((u) => u.id === r5.user_id);
+        const ta = inMemoryDb.tradingAccounts.get(r5.trading_account_id);
+        return {
+          ...r5,
+          client_first_name: user?.first_name || "",
+          client_last_name: user?.last_name || "",
+          client_email: user?.email || "",
+          platform: ta?.platform || "",
+          server_name: ta?.server_name || "",
+          is_demo: ta?.is_demo || false,
+          currency: ta?.currency || "USD",
+          balance: ta?.balance || "0.00"
+        };
+      }).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime());
+    }
+  }
+  /**
+   * Admin: Process password reset request (approve or reject)
+   */
+  static async processPasswordResetAdmin(adminUserId, requestId, action, input2, ip, userAgent) {
+    const pool2 = getPool();
+    const now = /* @__PURE__ */ new Date();
+    if (pool2) {
+      const rows = await query(`SELECT * FROM trading_password_resets WHERE id = $1`, [requestId]);
+      if (rows.length === 0) {
+        const err = new Error("Password reset request not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      const resetReq = rows[0];
+      if (resetReq.status !== "pending") {
+        const err = new Error("This password reset request has already been processed");
+        err.statusCode = 400;
+        throw err;
+      }
+      const accRows = await query(`SELECT * FROM trading_accounts WHERE id = $1`, [resetReq.trading_account_id]);
+      const rawAccount = accRows[0];
+      const account = rawAccount ? this.hydrateAccountRecord(rawAccount) : null;
+      if (action === "approve") {
+        const adminNotes = input2?.admin_notes?.trim() || "Password reset approved by operations desk";
+        await query(
+          `UPDATE trading_password_resets
+           SET status = 'approved', processed_by = $1, processed_at = $2, admin_notes = $3, updated_at = $2
+           WHERE id = $4`,
+          [adminUserId, now, adminNotes, requestId]
+        );
+        if (account && account.is_demo && input2?.new_password) {
+          const meta3 = this.parseMetadata(rawAccount);
+          meta3.demo_password = input2.new_password;
+          const serialized = this.serializeMetadata(meta3);
+          await query(
+            `UPDATE trading_accounts SET investor_notes = $1, updated_at = $2 WHERE id = $3`,
+            [serialized, now, account.id]
+          );
+        }
+        await this.recordAuditLog(
+          adminUserId,
+          "TRADING_PASSWORD_RESET_APPROVED",
+          resetReq.trading_account_id,
+          {
+            request_id: requestId,
+            account_number: resetReq.account_number,
+            is_demo: account?.is_demo ?? false,
+            admin_notes: adminNotes
+          },
+          ip,
+          userAgent
+        );
+        await NotificationService.createNotification(
+          resetReq.user_id,
+          "Trading Password Reset Approved",
+          `Your password reset request for trading account #${resetReq.account_number} has been approved.${input2?.admin_notes ? ` Note: ${input2.admin_notes}` : ""}`,
+          "trading_account",
+          { account_id: resetReq.trading_account_id, request_id: requestId }
+        );
+        return {
+          success: true,
+          message: "Password reset request approved.",
+          data: { ...resetReq, status: "approved", processed_by: adminUserId, processed_at: now, admin_notes: adminNotes },
+          new_password: input2?.new_password || null
+        };
+      } else {
+        const reason = input2?.rejection_reason?.trim() || input2?.admin_notes?.trim() || "Request rejected by administrator";
+        await query(
+          `UPDATE trading_password_resets
+           SET status = 'rejected', processed_by = $1, processed_at = $2, admin_notes = $3, updated_at = $2
+           WHERE id = $4`,
+          [adminUserId, now, reason, requestId]
+        );
+        await this.recordAuditLog(
+          adminUserId,
+          "TRADING_PASSWORD_RESET_REJECTED",
+          resetReq.trading_account_id,
+          {
+            request_id: requestId,
+            account_number: resetReq.account_number,
+            rejection_reason: reason
+          },
+          ip,
+          userAgent
+        );
+        await NotificationService.createNotification(
+          resetReq.user_id,
+          "Trading Password Reset Rejected",
+          `Your password reset request for trading account #${resetReq.account_number} was rejected. Reason: ${reason}`,
+          "trading_account",
+          { account_id: resetReq.trading_account_id, request_id: requestId }
+        );
+        return {
+          success: true,
+          message: "Password reset request rejected.",
+          data: { ...resetReq, status: "rejected", processed_by: adminUserId, processed_at: now, admin_notes: reason }
+        };
+      }
+    } else {
+      const resetReq = inMemoryDb.tradingPasswordResets.get(requestId);
+      if (!resetReq) {
+        const err = new Error("Password reset request not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      if (resetReq.status !== "pending") {
+        const err = new Error("This password reset request has already been processed");
+        err.statusCode = 400;
+        throw err;
+      }
+      const rawAccount = inMemoryDb.tradingAccounts.get(resetReq.trading_account_id);
+      const account = rawAccount ? this.hydrateAccountRecord(rawAccount) : null;
+      if (action === "approve") {
+        const adminNotes = input2?.admin_notes?.trim() || "Password reset approved by operations desk";
+        resetReq.status = "approved";
+        resetReq.processed_by = adminUserId;
+        resetReq.processed_at = now;
+        resetReq.admin_notes = adminNotes;
+        resetReq.updated_at = now;
+        if (account && account.is_demo && input2?.new_password) {
+          const meta3 = this.parseMetadata(rawAccount);
+          meta3.demo_password = input2.new_password;
+          rawAccount.investor_notes = this.serializeMetadata(meta3);
+          rawAccount.updated_at = now;
+        }
+        await this.recordAuditLog(
+          adminUserId,
+          "TRADING_PASSWORD_RESET_APPROVED",
+          resetReq.trading_account_id,
+          {
+            request_id: requestId,
+            account_number: resetReq.account_number,
+            is_demo: account?.is_demo ?? false,
+            admin_notes: adminNotes
+          },
+          ip,
+          userAgent
+        );
+        await NotificationService.createNotification(
+          resetReq.user_id,
+          "Trading Password Reset Approved",
+          `Your password reset request for trading account #${resetReq.account_number} has been approved.${input2?.admin_notes ? ` Note: ${input2.admin_notes}` : ""}`,
+          "trading_account",
+          { account_id: resetReq.trading_account_id, request_id: requestId }
+        );
+        return {
+          success: true,
+          message: "Password reset request approved.",
+          data: resetReq,
+          new_password: input2?.new_password || null
+        };
+      } else {
+        const reason = input2?.rejection_reason?.trim() || input2?.admin_notes?.trim() || "Request rejected by administrator";
+        resetReq.status = "rejected";
+        resetReq.processed_by = adminUserId;
+        resetReq.processed_at = now;
+        resetReq.admin_notes = reason;
+        resetReq.updated_at = now;
+        await this.recordAuditLog(
+          adminUserId,
+          "TRADING_PASSWORD_RESET_REJECTED",
+          resetReq.trading_account_id,
+          {
+            request_id: requestId,
+            account_number: resetReq.account_number,
+            rejection_reason: reason
+          },
+          ip,
+          userAgent
+        );
+        await NotificationService.createNotification(
+          resetReq.user_id,
+          "Trading Password Reset Rejected",
+          `Your password reset request for trading account #${resetReq.account_number} was rejected. Reason: ${reason}`,
+          "trading_account",
+          { account_id: resetReq.trading_account_id, request_id: requestId }
+        );
+        return {
+          success: true,
+          message: "Password reset request rejected.",
+          data: resetReq
+        };
+      }
+    }
+  }
+};
+
 // netlify/functions/services/auth.service.ts
 var AuthService = class {
   /**
@@ -47618,7 +49174,7 @@ var AuthService = class {
   static async recordAuditLog(actorId, action, entityType, entityId, details, ip, userAgent) {
     const pool2 = getPool();
     const now = /* @__PURE__ */ new Date();
-    const auditId = crypto4.randomUUID();
+    const auditId = crypto5.randomUUID();
     const sanitizedIp = ip ? String(ip).split(",")[0].trim().substring(0, 100) : null;
     const sanitizedUserAgent = userAgent ? String(userAgent).substring(0, 500) : null;
     if (pool2) {
@@ -47658,7 +49214,7 @@ var AuthService = class {
       }
     }
     const passwordHash = await bcryptjs_default.hash(input2.password, 10);
-    const userId = crypto4.randomUUID();
+    const userId = crypto5.randomUUID();
     const now = /* @__PURE__ */ new Date();
     const newUser = {
       id: userId,
@@ -47696,12 +49252,12 @@ var AuthService = class {
       await query(
         `INSERT INTO wallets (id, user_id, currency, balance, reserved_balance, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [crypto4.randomUUID(), newUser.id, newUser.preferred_currency, "0.00", "0.00", now, now]
+        [crypto5.randomUUID(), newUser.id, newUser.preferred_currency, "0.00", "0.00", now, now]
       );
     } else {
       inMemoryDb.users.set(emailNormalized, newUser);
       const userWallet = {
-        id: crypto4.randomUUID(),
+        id: crypto5.randomUUID(),
         user_id: newUser.id,
         currency: newUser.preferred_currency,
         balance: "0.00",
@@ -47711,6 +49267,18 @@ var AuthService = class {
       };
       inMemoryDb.wallets.set(userWallet.id, userWallet);
       inMemoryDb.wallets.set(`${userWallet.user_id}_${userWallet.currency}`, userWallet);
+    }
+    if (newUser.role === "client") {
+      try {
+        await TradingAccountService.provisionDefaultDemoAccount(
+          newUser.id,
+          newUser.preferred_currency || "USD",
+          ip,
+          userAgent
+        );
+      } catch (demoErr) {
+        console.error("Failed to auto-provision default demo account during client registration:", demoErr);
+      }
     }
     const token = generateToken(newUser);
     await this.recordAuditLog(
@@ -47828,11 +49396,11 @@ var AuthService = class {
         }
       }
     }
-    const rawToken = crypto4.randomBytes(32).toString("hex");
-    const tokenHash = crypto4.createHash("sha256").update(rawToken).digest("hex");
+    const rawToken = crypto5.randomBytes(32).toString("hex");
+    const tokenHash = crypto5.createHash("sha256").update(rawToken).digest("hex");
     const expiresAt = new Date(Date.now() + 60 * 60 * 1e3);
     const resetRecord = {
-      id: crypto4.randomUUID(),
+      id: crypto5.randomUUID(),
       email: emailNormalized,
       token_hash: tokenHash,
       expires_at: expiresAt,
@@ -47859,7 +49427,7 @@ var AuthService = class {
     if (!input2.token || input2.token.trim() === "") {
       throw new Error("Invalid or expired password reset token");
     }
-    const tokenHash = crypto4.createHash("sha256").update(input2.token.trim()).digest("hex");
+    const tokenHash = crypto5.createHash("sha256").update(input2.token.trim()).digest("hex");
     let email3 = null;
     let resetId = null;
     if (getPool()) {
@@ -47964,7 +49532,7 @@ var AuthService = class {
     }
     const emailNormalized = input2.email.toLowerCase();
     const passwordHash = await bcryptjs_default.hash(input2.password, 10);
-    const adminId = crypto4.randomUUID();
+    const adminId = crypto5.randomUUID();
     const now = /* @__PURE__ */ new Date();
     const newAdmin = {
       id: adminId,
@@ -48341,11 +49909,11 @@ var AuthService = class {
         balance: "0.00",
         reserved_balance: "0.00"
       };
-      const tradingAccounts = await query(
-        `SELECT id, account_number, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, group_tier, created_at
-         FROM trading_accounts WHERE user_id = $1 ORDER BY created_at DESC`,
+      const tradingAccountRows = await query(
+        `SELECT * FROM trading_accounts WHERE user_id = $1 ORDER BY created_at DESC`,
         [clientId]
       );
+      const tradingAccounts = tradingAccountRows.map((r5) => TradingAccountService.hydrateAccountRecord(r5));
       const kycProfileRows = await query(
         `SELECT * FROM kyc_profiles WHERE user_id = $1`,
         [clientId]
@@ -48399,7 +49967,7 @@ var AuthService = class {
         balance: "0.00",
         reserved_balance: "0.00"
       };
-      const tradingAccounts = Array.from(inMemoryDb.tradingAccounts.values()).filter((ta) => ta.user_id === clientId).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime());
+      const tradingAccounts = Array.from(inMemoryDb.tradingAccounts.values()).filter((ta) => ta.user_id === clientId).map((ta) => TradingAccountService.hydrateAccountRecord(ta)).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime());
       const kycProfile = Array.from(inMemoryDb.kycProfiles.values()).find((kp) => kp.user_id === clientId) || null;
       const kycDocs = Array.from(inMemoryDb.kycDocuments.values()).filter((kd) => kd.user_id === clientId).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime());
       const deposits = Array.from(inMemoryDb.deposits.values()).filter((d5) => d5.user_id === clientId).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime()).slice(0, 10);
@@ -48479,6 +50047,328 @@ var AuthService = class {
       { previous_status: previousStatus, new_status: status, reason }
     );
     return { success: true, clientId, status, previousStatus };
+  }
+  /**
+   * Admin-only client deletion / deactivation with comprehensive foreign-key inspection and financial retention.
+   *
+   * Pre-flight checks:
+   * 1. Authorization: caller must be admin, cannot delete own account.
+   * 2. Target must exist and must be a client (cannot delete staff admins).
+   * 3. Balance verification: client must NOT have active wallet balance > 0 or reserved_balance > 0.
+   * 4. Pending financial requests: must NOT have pending deposits, withdrawals, or account transfers.
+   * 5. Financial & audit retention decision:
+   *    - If client has ANY immutable ledger transactions, completed deposits/withdrawals, or transfers:
+   *      HARD deletion would destroy required financial ledger history. Instead, the safest account
+   *      deactivation lifecycle is applied: status set to 'suspended', all trading accounts archived,
+   *      and CLIENT_DEACTIVATED_RETAINED_FOR_AUDIT recorded.
+   *    - If client has ZERO financial history (fresh account / non-transacting):
+   *      Controlled transactional deletion order is executed, leaving NO orphan records:
+   *      notifications -> support_ticket_attachments -> support_ticket_messages -> support_tickets ->
+   *      kyc_documents -> kyc_profiles -> trading_password_resets -> trading_accounts ->
+   *      wallets -> password_resets -> audit_logs (actor_id nullified) -> users.
+   *      CLIENT_DELETED is recorded in audit logs.
+   */
+  static async deleteClient(adminUserId, clientId, options, ip, userAgent) {
+    if (adminUserId === clientId) {
+      const err = new Error("Administrators cannot delete their own profile");
+      err.statusCode = 400;
+      throw err;
+    }
+    const pool2 = getPool();
+    if (pool2) {
+      const userRows = await query(
+        `SELECT id, email, first_name, last_name, role, status FROM users WHERE id = $1`,
+        [clientId]
+      );
+      if (userRows.length === 0) {
+        const err = new Error("Client account not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      const targetUser = userRows[0];
+      if (targetUser.role === "admin") {
+        const err = new Error("Cannot delete administrator accounts via client deletion workflow");
+        err.statusCode = 403;
+        throw err;
+      }
+      if (options?.confirmEmail && options.confirmEmail.trim().toLowerCase() !== targetUser.email.toLowerCase()) {
+        const err = new Error("Email confirmation does not match the client email address");
+        err.statusCode = 400;
+        throw err;
+      }
+      const walletRows = await query(
+        `SELECT balance, reserved_balance FROM wallets WHERE user_id = $1`,
+        [clientId]
+      );
+      for (const w of walletRows) {
+        const bal = parseFloat(w.balance || "0");
+        const resBal = parseFloat(w.reserved_balance || "0");
+        if (bal > 0 || resBal > 0) {
+          const err = new Error(`Cannot delete client with active wallet balance (${w.balance}). Balance must be settled or withdrawn first.`);
+          err.statusCode = 400;
+          throw err;
+        }
+      }
+      const pendingDeposits = await query(
+        `SELECT id FROM deposits WHERE user_id = $1 AND status = 'pending'`,
+        [clientId]
+      );
+      if (pendingDeposits.length > 0) {
+        const err = new Error("Cannot delete client with pending deposits. Please approve or reject pending deposits first.");
+        err.statusCode = 400;
+        throw err;
+      }
+      const pendingWithdrawals = await query(
+        `SELECT id FROM withdrawals WHERE user_id = $1 AND status = 'pending'`,
+        [clientId]
+      );
+      if (pendingWithdrawals.length > 0) {
+        const err = new Error("Cannot delete client with pending withdrawals. Please approve or reject pending withdrawals first.");
+        err.statusCode = 400;
+        throw err;
+      }
+      const pendingTransfers = await query(
+        `SELECT id FROM account_transfers WHERE user_id = $1 AND status = 'pending'`,
+        [clientId]
+      );
+      if (pendingTransfers.length > 0) {
+        const err = new Error("Cannot delete client with pending account transfers. Please resolve transfers first.");
+        err.statusCode = 400;
+        throw err;
+      }
+      const txRows = await query(
+        `SELECT COUNT(*) as count FROM transactions WHERE user_id = $1`,
+        [clientId]
+      );
+      const txCount = parseInt(txRows[0]?.count || "0", 10);
+      const depRows = await query(
+        `SELECT COUNT(*) as count FROM deposits WHERE user_id = $1`,
+        [clientId]
+      );
+      const depCount = parseInt(depRows[0]?.count || "0", 10);
+      const wthRows = await query(
+        `SELECT COUNT(*) as count FROM withdrawals WHERE user_id = $1`,
+        [clientId]
+      );
+      const wthCount = parseInt(wthRows[0]?.count || "0", 10);
+      const trRows = await query(
+        `SELECT COUNT(*) as count FROM account_transfers WHERE user_id = $1`,
+        [clientId]
+      );
+      const trCount = parseInt(trRows[0]?.count || "0", 10);
+      const hasFinancialHistory = txCount > 0 || depCount > 0 || wthCount > 0 || trCount > 0;
+      if (hasFinancialHistory) {
+        await query(
+          `UPDATE users SET status = 'suspended', updated_at = NOW() WHERE id = $1`,
+          [clientId]
+        );
+        await query(
+          `UPDATE trading_accounts SET status = 'archived', updated_at = NOW() WHERE user_id = $1`,
+          [clientId]
+        );
+        await this.recordAuditLog(
+          adminUserId,
+          "CLIENT_DEACTIVATED_RETAINED_FOR_AUDIT",
+          "user",
+          clientId,
+          {
+            target_client_id: clientId,
+            target_email: targetUser.email,
+            transactions_retained: txCount,
+            deposits_retained: depCount,
+            withdrawals_retained: wthCount,
+            transfers_retained: trCount,
+            reason: "Client deletion requested; deactivated and archived to preserve immutable financial and audit history."
+          },
+          ip,
+          userAgent
+        );
+        return {
+          success: true,
+          action: "deactivated",
+          message: "Client profile has been deactivated and trading accounts archived. Financial ledger and audit history have been retained for regulatory compliance.",
+          client_id: clientId
+        };
+      } else {
+        await query(`DELETE FROM notifications WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM support_ticket_attachments WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM support_ticket_messages WHERE sender_id = $1`, [clientId]);
+        await query(`DELETE FROM support_tickets WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM kyc_documents WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM kyc_profiles WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM trading_password_resets WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM trading_accounts WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM account_transfers WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM deposits WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM withdrawals WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM transactions WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM wallets WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM password_resets WHERE email = $1`, [targetUser.email]);
+        await query(`UPDATE audit_logs SET actor_id = NULL WHERE actor_id = $1`, [clientId]);
+        await query(`DELETE FROM users WHERE id = $1`, [clientId]);
+        await this.recordAuditLog(
+          adminUserId,
+          "CLIENT_DELETED",
+          "user",
+          clientId,
+          {
+            deleted_client_id: clientId,
+            deleted_client_email: targetUser.email,
+            reason: "Client deleted with no prior financial history."
+          },
+          ip,
+          userAgent
+        );
+        return {
+          success: true,
+          action: "deleted",
+          message: "Client profile and associated records deleted successfully.",
+          client_id: clientId
+        };
+      }
+    } else {
+      const targetUser = Array.from(inMemoryDb.users.values()).find((u) => u.id === clientId);
+      if (!targetUser) {
+        const err = new Error("Client account not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      if (targetUser.role === "admin") {
+        const err = new Error("Cannot delete administrator accounts via client deletion workflow");
+        err.statusCode = 403;
+        throw err;
+      }
+      if (options?.confirmEmail && options.confirmEmail.trim().toLowerCase() !== targetUser.email.toLowerCase()) {
+        const err = new Error("Email confirmation does not match the client email address");
+        err.statusCode = 400;
+        throw err;
+      }
+      const clientWallets = Array.from(inMemoryDb.wallets.values()).filter((w) => w.user_id === clientId);
+      for (const w of clientWallets) {
+        const bal = parseFloat(w.balance || "0");
+        const resBal = parseFloat(w.reserved_balance || "0");
+        if (bal > 0 || resBal > 0) {
+          const err = new Error(`Cannot delete client with active wallet balance (${w.balance}). Balance must be settled or withdrawn first.`);
+          err.statusCode = 400;
+          throw err;
+        }
+      }
+      const pendingDeposits = Array.from(inMemoryDb.deposits.values()).filter((d5) => d5.user_id === clientId && d5.status === "pending");
+      if (pendingDeposits.length > 0) {
+        const err = new Error("Cannot delete client with pending deposits. Please approve or reject pending deposits first.");
+        err.statusCode = 400;
+        throw err;
+      }
+      const pendingWithdrawals = Array.from(inMemoryDb.withdrawals.values()).filter((w) => w.user_id === clientId && w.status === "pending");
+      if (pendingWithdrawals.length > 0) {
+        const err = new Error("Cannot delete client with pending withdrawals. Please approve or reject pending withdrawals first.");
+        err.statusCode = 400;
+        throw err;
+      }
+      const pendingTransfers = Array.from(inMemoryDb.accountTransfers.values()).filter((tr) => tr.user_id === clientId && tr.status === "pending");
+      if (pendingTransfers.length > 0) {
+        const err = new Error("Cannot delete client with pending account transfers. Please resolve transfers first.");
+        err.statusCode = 400;
+        throw err;
+      }
+      const txCount = inMemoryDb.transactions.filter((t) => t.user_id === clientId).length;
+      const depCount = Array.from(inMemoryDb.deposits.values()).filter((d5) => d5.user_id === clientId).length;
+      const wthCount = Array.from(inMemoryDb.withdrawals.values()).filter((w) => w.user_id === clientId).length;
+      const trCount = Array.from(inMemoryDb.accountTransfers.values()).filter((tr) => tr.user_id === clientId).length;
+      const hasFinancialHistory = txCount > 0 || depCount > 0 || wthCount > 0 || trCount > 0;
+      if (hasFinancialHistory) {
+        targetUser.status = "suspended";
+        targetUser.updated_at = /* @__PURE__ */ new Date();
+        for (const [id, acc] of inMemoryDb.tradingAccounts.entries()) {
+          if (acc.user_id === clientId) {
+            acc.status = "archived";
+            acc.updated_at = /* @__PURE__ */ new Date();
+          }
+        }
+        await this.recordAuditLog(
+          adminUserId,
+          "CLIENT_DEACTIVATED_RETAINED_FOR_AUDIT",
+          "user",
+          clientId,
+          {
+            target_client_id: clientId,
+            target_email: targetUser.email,
+            transactions_retained: txCount,
+            deposits_retained: depCount,
+            withdrawals_retained: wthCount,
+            transfers_retained: trCount,
+            reason: "Client deletion requested; deactivated and archived to preserve immutable financial and audit history."
+          },
+          ip,
+          userAgent
+        );
+        return {
+          success: true,
+          action: "deactivated",
+          message: "Client profile has been deactivated and trading accounts archived. Financial ledger and audit history have been retained for regulatory compliance.",
+          client_id: clientId
+        };
+      } else {
+        inMemoryDb.notifications = inMemoryDb.notifications.filter((n3) => n3.user_id !== clientId);
+        inMemoryDb.supportAttachments = inMemoryDb.supportAttachments.filter((a5) => a5.user_id !== clientId);
+        inMemoryDb.supportMessages = inMemoryDb.supportMessages.filter((m3) => m3.sender_id !== clientId);
+        for (const [id, t] of inMemoryDb.supportTickets.entries()) {
+          if (t.user_id === clientId) inMemoryDb.supportTickets.delete(id);
+        }
+        for (const [id, d5] of inMemoryDb.kycDocuments.entries()) {
+          if (d5.user_id === clientId) inMemoryDb.kycDocuments.delete(id);
+        }
+        for (const [id, p3] of inMemoryDb.kycProfiles.entries()) {
+          if (p3.user_id === clientId) inMemoryDb.kycProfiles.delete(id);
+        }
+        for (const [id, r5] of inMemoryDb.tradingPasswordResets.entries()) {
+          if (r5.user_id === clientId) inMemoryDb.tradingPasswordResets.delete(id);
+        }
+        for (const [id, acc] of inMemoryDb.tradingAccounts.entries()) {
+          if (acc.user_id === clientId) inMemoryDb.tradingAccounts.delete(id);
+        }
+        for (const [id, tr] of inMemoryDb.accountTransfers.entries()) {
+          if (tr.user_id === clientId) inMemoryDb.accountTransfers.delete(id);
+        }
+        for (const [id, d5] of inMemoryDb.deposits.entries()) {
+          if (d5.user_id === clientId) inMemoryDb.deposits.delete(id);
+        }
+        for (const [id, w] of inMemoryDb.withdrawals.entries()) {
+          if (w.user_id === clientId) inMemoryDb.withdrawals.delete(id);
+        }
+        inMemoryDb.transactions = inMemoryDb.transactions.filter((t) => t.user_id !== clientId);
+        for (const [k5, w] of inMemoryDb.wallets.entries()) {
+          if (w.user_id === clientId) inMemoryDb.wallets.delete(k5);
+        }
+        for (const [tok, pr] of inMemoryDb.passwordResets.entries()) {
+          if (pr.email === targetUser.email) inMemoryDb.passwordResets.delete(tok);
+        }
+        for (const al of inMemoryDb.auditLogs) {
+          if (al.actor_id === clientId) al.actor_id = null;
+        }
+        inMemoryDb.users.delete(targetUser.email.toLowerCase());
+        inMemoryDb.users.delete(clientId);
+        await this.recordAuditLog(
+          adminUserId,
+          "CLIENT_DELETED",
+          "user",
+          clientId,
+          {
+            deleted_client_id: clientId,
+            deleted_client_email: targetUser.email,
+            reason: "Client deleted with no prior financial history."
+          },
+          ip,
+          userAgent
+        );
+        return {
+          success: true,
+          action: "deleted",
+          message: "Client profile and associated records deleted successfully.",
+          client_id: clientId
+        };
+      }
+    }
   }
   /**
    * Broadcast notification to all clients or send to a specific client
@@ -48600,7 +50490,7 @@ var AuthService = class {
     }
     const salt = await bcryptjs_default.genSalt(10);
     const passwordHash = await bcryptjs_default.hash(payload.password, salt);
-    const newAdminId = crypto4.randomUUID();
+    const newAdminId = crypto5.randomUUID();
     const now = /* @__PURE__ */ new Date();
     if (pool2) {
       await query(
@@ -48737,7 +50627,7 @@ var AuthService = class {
 };
 
 // netlify/functions/services/financial.service.ts
-import crypto5 from "crypto";
+import crypto6 from "crypto";
 
 // node_modules/decimal.js/decimal.mjs
 var EXP_LIMIT = 9e15;
@@ -50993,10 +52883,10 @@ function canDeposit(requestedAmount, minAmount = "10.00", maxAmount = "100000.00
 // netlify/functions/services/financial.service.ts
 var FinancialService = class {
   /**
-   * Generates readable financial reference identifiers (e.g. DEP-2026-X8F2B)
+   * Generates readable financial reference identifiers (e.g. DEP-2026-X8F2B, TRF-2026-A1B2C)
    */
   static generateReference(prefix) {
-    const randomHex = crypto5.randomBytes(3).toString("hex").toUpperCase();
+    const randomHex = crypto6.randomBytes(3).toString("hex").toUpperCase();
     const timestamp = Date.now().toString(36).toUpperCase().slice(-4);
     return `${prefix}-${timestamp}-${randomHex}`;
   }
@@ -51006,7 +52896,7 @@ var FinancialService = class {
   static async recordAuditLog(actorId, action, targetType, targetId, details, ip, userAgent) {
     const pool2 = getPool();
     const now = /* @__PURE__ */ new Date();
-    const auditId = crypto5.randomUUID();
+    const auditId = crypto6.randomUUID();
     const sanitizedIp = ip ? String(ip).split(",")[0].trim().substring(0, 100) : null;
     const sanitizedUserAgent = userAgent ? String(userAgent).substring(0, 500) : null;
     if (pool2) {
@@ -51043,7 +52933,7 @@ var FinancialService = class {
         [userId, upperCurrency]
       );
       if (rows.length === 0) {
-        const newWalletId = crypto5.randomUUID();
+        const newWalletId = crypto6.randomUUID();
         const now = /* @__PURE__ */ new Date();
         await query(
           `INSERT INTO wallets (id, user_id, currency, balance, reserved_balance, created_at, updated_at)
@@ -51073,7 +52963,7 @@ var FinancialService = class {
       }
       if (!wallet) {
         wallet = {
-          id: crypto5.randomUUID(),
+          id: crypto6.randomUUID(),
           user_id: userId,
           currency: upperCurrency,
           balance: "0.00",
@@ -51123,8 +53013,9 @@ var FinancialService = class {
   static async createDeposit(userId, input2, ip, userAgent) {
     const wallet = await this.getOrCreateWallet(userId, input2.currency || "USD");
     const depositAmount = toDecimal(input2.amount);
-    let paymentMethodName = "Manual Bank / Crypto Clearing";
-    if (input2.payment_method_id) {
+    let paymentMethodName = input2.payment_method_name?.trim() || "Manual / Other";
+    const isManualOrOther = !input2.payment_method_id || input2.payment_method_id === "manual_other" || input2.payment_method_id === "custom_manual";
+    if (!isManualOrOther && input2.payment_method_id) {
       const pms = await this.getPaymentMethods("deposit");
       const found = pms.find((p3) => p3.id === input2.payment_method_id);
       if (found) {
@@ -51133,15 +53024,23 @@ var FinancialService = class {
         if (!validation.valid) {
           throw new Error(validation.reason);
         }
+      } else {
+        const validation = canDeposit(depositAmount);
+        if (!validation.valid) {
+          throw new Error(validation.reason);
+        }
       }
     } else {
+      if (input2.payment_method_name?.trim()) {
+        paymentMethodName = input2.payment_method_name.trim();
+      }
       const validation = canDeposit(depositAmount);
       if (!validation.valid) {
         throw new Error(validation.reason);
       }
     }
     const pool2 = getPool();
-    const depositId = crypto5.randomUUID();
+    const depositId = crypto6.randomUUID();
     const referenceNo = this.generateReference("DEP");
     const now = /* @__PURE__ */ new Date();
     const amountStr = formatMoney(depositAmount);
@@ -51150,7 +53049,7 @@ var FinancialService = class {
       reference_no: referenceNo,
       user_id: userId,
       wallet_id: wallet.id,
-      payment_method_id: input2.payment_method_id || null,
+      payment_method_id: isManualOrOther ? null : input2.payment_method_id || null,
       payment_method_name: paymentMethodName,
       amount: amountStr,
       currency: wallet.currency,
@@ -51238,7 +53137,7 @@ var FinancialService = class {
     const reservedStr = formatMoney(reservedDec);
     const now = /* @__PURE__ */ new Date();
     const txnNo = this.generateReference("TXN");
-    const txnId = crypto5.randomUUID();
+    const txnId = crypto6.randomUUID();
     const transactionRecord = {
       id: txnId,
       transaction_no: txnNo,
@@ -51426,7 +53325,7 @@ var FinancialService = class {
     const reservedAfterStr = formatMoney(reservedAfterDec);
     const amountStr = formatMoney(withdrawalAmount);
     const pool2 = getPool();
-    const withdrawalId = crypto5.randomUUID();
+    const withdrawalId = crypto6.randomUUID();
     const referenceNo = this.generateReference("WTH");
     const now = /* @__PURE__ */ new Date();
     const withdrawalRecord = {
@@ -51451,7 +53350,7 @@ var FinancialService = class {
       updated_at: now
     };
     const txnNo = this.generateReference("TXN");
-    const txnId = crypto5.randomUUID();
+    const txnId = crypto6.randomUUID();
     const transactionRecord = {
       id: txnId,
       transaction_no: txnNo,
@@ -51591,7 +53490,7 @@ var FinancialService = class {
     const reservedAfterStr = formatMoney(reservedAfterDec);
     const now = /* @__PURE__ */ new Date();
     const txnNo = this.generateReference("TXN");
-    const txnId = crypto5.randomUUID();
+    const txnId = crypto6.randomUUID();
     const transactionRecord = {
       id: txnId,
       transaction_no: txnNo,
@@ -51722,7 +53621,7 @@ var FinancialService = class {
     const reservedAfterStr = formatMoney(reservedAfterDec);
     const now = /* @__PURE__ */ new Date();
     const txnNo = this.generateReference("TXN");
-    const txnId = crypto5.randomUUID();
+    const txnId = crypto6.randomUUID();
     const transactionRecord = {
       id: txnId,
       transaction_no: txnNo,
@@ -51851,7 +53750,7 @@ var FinancialService = class {
     const reservedAfterStr = formatMoney(reservedAfterDec);
     const now = /* @__PURE__ */ new Date();
     const txnNo = this.generateReference("TXN");
-    const txnId = crypto5.randomUUID();
+    const txnId = crypto6.randomUUID();
     const transactionRecord = {
       id: txnId,
       transaction_no: txnNo,
@@ -51963,7 +53862,7 @@ var FinancialService = class {
     const reservedStr = formatMoney(reservedDec);
     const now = /* @__PURE__ */ new Date();
     const txnNo = this.generateReference("TXN");
-    const txnId = crypto5.randomUUID();
+    const txnId = crypto6.randomUUID();
     const transactionRecord = {
       id: txnId,
       transaction_no: txnNo,
@@ -52173,690 +54072,500 @@ var FinancialService = class {
       return list2.slice(0, limit);
     }
   }
-};
-
-// netlify/functions/services/trading-account.service.ts
-import crypto6 from "crypto";
-var TradingAccountService = class {
+  // =========================================================================
+  // ACCOUNT TRANSFERS: WALLET <-> TRADING ACCOUNT WORKFLOW
+  // =========================================================================
   /**
-   * Records an audit log entry for trading account events
+   * CLIENT: Creates a new pending transfer request between Client Wallet and Trading Account.
+   * Enforces strict IDOR ownership on the trading account and exact decimal validation.
+   * In accordance with manual broker architecture, balances are NOT moved until Admin approves.
    */
-  static async recordAuditLog(actorId, action, targetId, details, ip, userAgent) {
-    const pool2 = getPool();
-    const now = /* @__PURE__ */ new Date();
-    const auditId = crypto6.randomUUID();
-    const sanitizedIp = ip ? String(ip).split(",")[0].trim().substring(0, 100) : null;
-    const sanitizedUserAgent = userAgent ? String(userAgent).substring(0, 500) : null;
-    if (pool2) {
-      await query(
-        `INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, ip_address, user_agent, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [auditId, actorId, action, "trading_account", targetId, JSON.stringify(details), sanitizedIp, sanitizedUserAgent, now]
-      );
-    } else {
-      const record2 = {
-        id: auditId,
-        actor_id: actorId,
-        action,
-        entity_type: "trading_account",
-        entity_id: targetId,
-        details,
-        ip_address: sanitizedIp,
-        user_agent: sanitizedUserAgent,
-        created_at: now
-      };
-      inMemoryDb.auditLogs.unshift(record2);
+  static async createAccountTransfer(userId, input2, ip, userAgent) {
+    const transferAmount = toDecimal(input2.amount);
+    if (transferAmount.lessThanOrEqualTo(0)) {
+      throw new Error("Transfer amount must be greater than 0.00");
     }
-  }
-  /**
-   * Generates a numeric account login number
-   */
-  static generateAccountNumber(isDemo) {
-    const prefix = isDemo ? "90" : "20";
-    const rand = Math.floor(1e5 + Math.random() * 9e5);
-    return `${prefix}${rand}`;
-  }
-  /**
-   * Register a new trading account request for a user
-   */
-  static async registerAccount(userId, input2, ip, userAgent) {
-    const now = /* @__PURE__ */ new Date();
-    const accountId = crypto6.randomUUID();
-    const accountNumber = this.generateAccountNumber(input2.is_demo);
-    const defaultServer = input2.server_name || (input2.is_demo ? `${input2.platform}-Demo-Server` : `${input2.platform}-Real-Server-1`);
-    const status = input2.is_demo ? "active" : "pending_approval";
-    const newAccount = {
-      id: accountId,
-      account_number: accountNumber,
-      user_id: userId,
-      platform: input2.platform,
-      account_type: input2.account_type,
-      server_name: defaultServer,
-      currency: input2.currency.toUpperCase(),
-      leverage: input2.leverage,
-      status,
-      nickname: input2.nickname?.trim() || null,
-      is_demo: input2.is_demo,
-      group_tier: `${input2.account_type}_${input2.currency.toLowerCase()}`,
-      created_at: now,
-      updated_at: now,
-      approved_at: input2.is_demo ? now : null,
-      approved_by: input2.is_demo ? "SYSTEM" : null
-    };
-    const pool2 = getPool();
-    if (pool2) {
-      await query(
-        `INSERT INTO trading_accounts 
-         (id, account_number, user_id, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, group_tier, created_at, updated_at, approved_at, approved_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
-        [
-          newAccount.id,
-          newAccount.account_number,
-          newAccount.user_id,
-          newAccount.platform,
-          newAccount.account_type,
-          newAccount.server_name,
-          newAccount.currency,
-          newAccount.leverage,
-          newAccount.status,
-          newAccount.nickname,
-          newAccount.is_demo,
-          newAccount.group_tier,
-          newAccount.created_at,
-          newAccount.updated_at,
-          newAccount.approved_at,
-          newAccount.approved_by
-        ]
-      );
-    } else {
-      inMemoryDb.tradingAccounts.set(newAccount.id, newAccount);
+    const tradingAccount = await TradingAccountService.getUserAccountById(userId, input2.trading_account_id);
+    if (!tradingAccount) {
+      const err = new Error("Trading account not found or access denied");
+      err.statusCode = 404;
+      throw err;
     }
-    await this.recordAuditLog(
-      userId,
-      "TRADING_ACCOUNT_REGISTERED",
-      newAccount.id,
-      {
-        account_number: newAccount.account_number,
-        platform: newAccount.platform,
-        account_type: newAccount.account_type,
-        currency: newAccount.currency,
-        leverage: newAccount.leverage,
-        is_demo: newAccount.is_demo,
-        status: newAccount.status
-      },
-      ip,
-      userAgent
-    );
-    return newAccount;
-  }
-  /**
-   * Link an existing external trading account to the user's CRM profile
-   */
-  static async linkExistingAccount(userId, input2, ip, userAgent) {
-    const cleanAccountNumber = input2.account_number.trim();
-    const pool2 = getPool();
-    if (pool2) {
-      const existing = await query(
-        `SELECT * FROM trading_accounts 
-         WHERE account_number = $1 AND platform = $2 AND status != 'archived'`,
-        [cleanAccountNumber, input2.platform]
-      );
-      if (existing.length > 0) {
-        throw new Error("This trading account number is already linked or pending review in the CRM");
+    const currency = input2.currency || tradingAccount.currency || "USD";
+    const wallet = await this.getOrCreateWallet(userId, currency);
+    if (input2.direction === "wallet_to_trading") {
+      const availableDec = toDecimal(wallet.available_balance);
+      if (availableDec.lessThan(transferAmount)) {
+        throw new Error(
+          `Insufficient wallet balance. Available: $${wallet.available_balance} ${wallet.currency}, Requested: $${formatMoney(transferAmount)}`
+        );
+      }
+    } else if (input2.direction === "trading_to_wallet") {
+      const tradingBalDec = toDecimal(tradingAccount.balance || "0.00");
+      if (tradingBalDec.lessThan(transferAmount)) {
+        throw new Error(
+          `Insufficient trading account balance. Available: $${tradingAccount.balance || "0.00"} ${tradingAccount.currency}, Requested: $${formatMoney(transferAmount)}`
+        );
       }
     } else {
-      for (const acc of inMemoryDb.tradingAccounts.values()) {
-        if (acc.account_number === cleanAccountNumber && acc.platform === input2.platform && acc.status !== "archived") {
-          throw new Error("This trading account number is already linked or pending review in the CRM");
-        }
-      }
+      throw new Error(`Invalid transfer direction: ${input2.direction}`);
     }
+    const pool2 = getPool();
+    const transferId = crypto6.randomUUID();
+    const referenceNo = this.generateReference("TRF");
     const now = /* @__PURE__ */ new Date();
-    const accountId = crypto6.randomUUID();
-    const linkedAccount = {
-      id: accountId,
-      account_number: cleanAccountNumber,
+    const amountStr = formatMoney(transferAmount);
+    const record2 = {
+      id: transferId,
+      reference_no: referenceNo,
       user_id: userId,
-      platform: input2.platform,
-      account_type: input2.account_type,
-      server_name: input2.server_name.trim(),
-      currency: input2.currency.toUpperCase(),
-      leverage: input2.leverage,
-      status: "pending_approval",
-      nickname: input2.nickname?.trim() || null,
-      is_demo: false,
-      investor_notes: input2.investor_notes?.trim() || null,
-      group_tier: `${input2.account_type}_${input2.currency.toLowerCase()}`,
+      wallet_id: wallet.id,
+      trading_account_id: tradingAccount.id,
+      direction: input2.direction,
+      amount: amountStr,
+      currency: wallet.currency,
+      status: "pending",
+      client_notes: input2.client_notes || null,
+      admin_notes: null,
+      approved_by: null,
+      approved_at: null,
+      rejected_by: null,
+      rejected_at: null,
+      rejection_reason: null,
       created_at: now,
       updated_at: now
     };
     if (pool2) {
       await query(
-        `INSERT INTO trading_accounts 
-         (id, account_number, user_id, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, investor_notes, group_tier, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+        `INSERT INTO account_transfers (
+          id, reference_no, user_id, wallet_id, trading_account_id, direction, amount, currency, status, client_notes, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
         [
-          linkedAccount.id,
-          linkedAccount.account_number,
-          linkedAccount.user_id,
-          linkedAccount.platform,
-          linkedAccount.account_type,
-          linkedAccount.server_name,
-          linkedAccount.currency,
-          linkedAccount.leverage,
-          linkedAccount.status,
-          linkedAccount.nickname,
-          linkedAccount.is_demo,
-          linkedAccount.investor_notes,
-          linkedAccount.group_tier,
-          linkedAccount.created_at,
-          linkedAccount.updated_at
+          record2.id,
+          record2.reference_no,
+          record2.user_id,
+          record2.wallet_id,
+          record2.trading_account_id,
+          record2.direction,
+          record2.amount,
+          record2.currency,
+          record2.status,
+          record2.client_notes,
+          record2.created_at,
+          record2.updated_at
         ]
       );
     } else {
-      inMemoryDb.tradingAccounts.set(linkedAccount.id, linkedAccount);
+      inMemoryDb.accountTransfers.set(record2.id, record2);
     }
     await this.recordAuditLog(
       userId,
-      "TRADING_ACCOUNT_LINK_REQUESTED",
-      linkedAccount.id,
+      "TRANSFER_REQUEST_CREATED",
+      "account_transfer",
+      record2.id,
       {
-        account_number: linkedAccount.account_number,
-        platform: linkedAccount.platform,
-        server_name: linkedAccount.server_name,
-        currency: linkedAccount.currency,
-        status: linkedAccount.status
+        reference_no: record2.reference_no,
+        direction: record2.direction,
+        amount: record2.amount,
+        currency: record2.currency,
+        trading_account_id: tradingAccount.id,
+        account_number: tradingAccount.account_number,
+        platform: tradingAccount.platform,
+        client_notes: record2.client_notes
       },
       ip,
       userAgent
     );
-    return linkedAccount;
+    return record2;
   }
   /**
-   * Get all trading accounts owned by a specific user (Client view)
+   * List account transfers with owner and trading account details hydrated
    */
-  static async getUserAccounts(userId) {
+  static async getAccountTransfers(filter) {
     const pool2 = getPool();
     if (pool2) {
-      return await query(
-        `SELECT * FROM trading_accounts WHERE user_id = $1 AND status != 'archived' ORDER BY created_at DESC`,
-        [userId]
-      );
-    }
-    const results = [];
-    for (const acc of inMemoryDb.tradingAccounts.values()) {
-      if (acc.user_id === userId && acc.status !== "archived") {
-        results.push({ ...acc });
-      }
-    }
-    return results.sort((a5, b5) => b5.created_at.getTime() - a5.created_at.getTime());
-  }
-  /**
-   * Get a single trading account by ID with strict IDOR ownership check
-   */
-  static async getUserAccountById(userId, accountId) {
-    const account = await this.findRawAccount(accountId);
-    if (!account) {
-      const err = new Error("Trading account not found");
-      err.statusCode = 404;
-      throw err;
-    }
-    if (account.user_id !== userId) {
-      const err = new Error("Access forbidden: you do not have permission to access this trading account");
-      err.statusCode = 403;
-      throw err;
-    }
-    return account;
-  }
-  /**
-   * Update nickname/display label of a trading account with strict IDOR ownership check
-   */
-  static async updateUserAccountNickname(userId, accountId, nickname, ip, userAgent) {
-    const account = await this.getUserAccountById(userId, accountId);
-    const updatedNickname = nickname?.trim() || null;
-    const now = /* @__PURE__ */ new Date();
-    const pool2 = getPool();
-    if (pool2) {
-      await query(
-        `UPDATE trading_accounts SET nickname = $1, updated_at = $2 WHERE id = $3`,
-        [updatedNickname, now, accountId]
-      );
-    } else {
-      const record2 = inMemoryDb.tradingAccounts.get(accountId);
-      if (record2) {
-        record2.nickname = updatedNickname;
-        record2.updated_at = now;
-      }
-    }
-    account.nickname = updatedNickname;
-    account.updated_at = now;
-    await this.recordAuditLog(
-      userId,
-      "TRADING_ACCOUNT_NICKNAME_UPDATED",
-      accountId,
-      {
-        account_number: account.account_number,
-        nickname: updatedNickname
-      },
-      ip,
-      userAgent
-    );
-    return account;
-  }
-  /**
-   * Request leverage change on a trading account with strict IDOR ownership check
-   */
-  static async requestLeverageChange(userId, accountId, requestedLeverage, reason, ip, userAgent) {
-    const account = await this.getUserAccountById(userId, accountId);
-    if (account.status === "archived" || account.status === "disabled") {
-      const err = new Error(`Cannot request leverage change on an account with status '${account.status}'`);
-      err.statusCode = 400;
-      throw err;
-    }
-    await this.recordAuditLog(
-      userId,
-      "TRADING_ACCOUNT_LEVERAGE_CHANGE_REQUESTED",
-      accountId,
-      {
-        account_number: account.account_number,
-        current_leverage: account.leverage,
-        requested_leverage: requestedLeverage,
-        reason: reason || null
-      },
-      ip,
-      userAgent
-    );
-    return {
-      message: `Leverage change request to ${requestedLeverage} submitted for administrative review`,
-      account
-    };
-  }
-  // =========================================================================
-  // ADMIN WORKFLOWS
-  // =========================================================================
-  /**
-   * List all trading accounts across the broker with search and filters (Admin view)
-   */
-  static async getAllAccountsAdmin(filters = {}) {
-    const pool2 = getPool();
-    if (pool2) {
-      let sql = `
-        SELECT ta.*, u.first_name, u.last_name, u.email, u.country
-        FROM trading_accounts ta
-        JOIN users u ON ta.user_id = u.id
-        WHERE 1=1
-      `;
+      const conditions = [];
       const params = [];
-      if (filters.status) {
-        params.push(filters.status);
-        sql += ` AND ta.status = $${params.length}`;
+      if (filter?.userId) {
+        params.push(filter.userId);
+        conditions.push(`t.user_id = $${params.length}`);
       }
-      if (filters.platform) {
-        params.push(filters.platform);
-        sql += ` AND ta.platform = $${params.length}`;
+      if (filter?.status) {
+        params.push(filter.status);
+        conditions.push(`t.status = $${params.length}`);
       }
-      if (filters.user_id) {
-        params.push(filters.user_id);
-        sql += ` AND ta.user_id = $${params.length}`;
+      if (filter?.tradingAccountId) {
+        params.push(filter.tradingAccountId);
+        conditions.push(`t.trading_account_id = $${params.length}`);
       }
-      if (filters.search) {
-        params.push(`%${filters.search.toLowerCase()}%`);
-        sql += ` AND (LOWER(ta.account_number) LIKE $${params.length} OR LOWER(u.email) LIKE $${params.length} OR LOWER(ta.nickname) LIKE $${params.length})`;
+      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+      const sql = `
+        SELECT 
+          t.*,
+          u.email as user_email,
+          CONCAT(u.first_name, ' ', u.last_name) as user_name,
+          a.account_number,
+          a.platform
+        FROM account_transfers t
+        LEFT JOIN users u ON t.user_id = u.id
+        LEFT JOIN trading_accounts a ON t.trading_account_id = a.id
+        ${whereClause}
+        ORDER BY t.created_at DESC
+      `;
+      return query(sql, params);
+    } else {
+      let list2 = Array.from(inMemoryDb.accountTransfers.values());
+      if (filter?.userId) {
+        list2 = list2.filter((t) => t.user_id === filter.userId);
       }
-      sql += ` ORDER BY ta.created_at DESC`;
-      const rows = await query(sql, params);
-      return rows.map((r5) => ({
-        id: r5.id,
-        account_number: r5.account_number,
-        user_id: r5.user_id,
-        platform: r5.platform,
-        account_type: r5.account_type,
-        server_name: r5.server_name,
-        currency: r5.currency,
-        leverage: r5.leverage,
-        status: r5.status,
-        nickname: r5.nickname,
-        is_demo: r5.is_demo,
-        group_tier: r5.group_tier,
-        investor_notes: r5.investor_notes,
-        admin_notes: r5.admin_notes,
-        rejection_reason: r5.rejection_reason,
-        approved_at: r5.approved_at ? new Date(r5.approved_at) : null,
-        approved_by: r5.approved_by,
-        created_at: new Date(r5.created_at),
-        updated_at: new Date(r5.updated_at),
-        owner: {
-          id: r5.user_id,
-          first_name: r5.first_name,
-          last_name: r5.last_name,
-          email: r5.email,
-          country: r5.country
+      if (filter?.status) {
+        list2 = list2.filter((t) => t.status === filter.status);
+      }
+      if (filter?.tradingAccountId) {
+        list2 = list2.filter((t) => t.trading_account_id === filter.tradingAccountId);
+      }
+      const hydrated = list2.map((t) => {
+        let userEmail;
+        let userName;
+        let accountNumber;
+        let platform2;
+        for (const u of inMemoryDb.users.values()) {
+          if (u.id === t.user_id) {
+            userEmail = u.email;
+            userName = `${u.first_name} ${u.last_name}`.trim();
+            break;
+          }
         }
-      }));
-    }
-    const results = [];
-    for (const acc of inMemoryDb.tradingAccounts.values()) {
-      if (filters.status && acc.status !== filters.status) continue;
-      if (filters.platform && acc.platform !== filters.platform) continue;
-      if (filters.user_id && acc.user_id !== filters.user_id) continue;
-      let owner = void 0;
-      for (const u of inMemoryDb.users.values()) {
-        if (u.id === acc.user_id) {
-          owner = u;
-          break;
+        const acc = inMemoryDb.tradingAccounts.get(t.trading_account_id);
+        if (acc) {
+          accountNumber = acc.account_number;
+          platform2 = acc.platform;
         }
-      }
-      if (filters.search) {
-        const term = filters.search.toLowerCase();
-        const matchNum = acc.account_number.toLowerCase().includes(term);
-        const matchNick = acc.nickname?.toLowerCase().includes(term);
-        const matchEmail = owner?.email.toLowerCase().includes(term);
-        if (!matchNum && !matchNick && !matchEmail) continue;
-      }
-      results.push({
-        ...acc,
-        owner: owner ? {
-          id: owner.id,
-          first_name: owner.first_name,
-          last_name: owner.last_name,
-          email: owner.email,
-          country: owner.country
-        } : void 0
+        return {
+          ...t,
+          user_email: userEmail,
+          user_name: userName,
+          account_number: accountNumber,
+          platform: platform2
+        };
       });
+      hydrated.sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime());
+      return hydrated;
     }
-    return results.sort((a5, b5) => b5.created_at.getTime() - a5.created_at.getTime());
   }
   /**
-   * Get single trading account detail with owner and audit logs (Admin view)
+   * ADMIN: Approves a pending transfer request between Wallet and Trading Account.
+   * Atomically:
+   * 1. Validates request is pending (guards against duplicate or concurrent approvals)
+   * 2. Validates authoritative balance at approval time
+   * 3. Executes exact decimal arithmetic for wallet and trading account
+   * 4. Debits source, credits destination
+   * 5. Creates immutable ledger entry in transactions
+   * 6. Marks transfer as approved
+   * 7. Logs comprehensive audit record and notifies client
    */
-  static async getAccountByIdAdmin(accountId) {
-    const account = await this.findRawAccount(accountId);
-    if (!account) {
-      const err = new Error("Trading account not found");
+  static async approveAccountTransfer(transferId, adminId, input2, ip, userAgent) {
+    const pool2 = getPool();
+    let transfer = null;
+    if (pool2) {
+      const rows = await query("SELECT * FROM account_transfers WHERE id = $1", [transferId]);
+      transfer = rows[0] || null;
+    } else {
+      transfer = inMemoryDb.accountTransfers.get(transferId) || null;
+    }
+    if (!transfer) {
+      const err = new Error(`Transfer request "${transferId}" not found`);
       err.statusCode = 404;
       throw err;
     }
-    let owner = void 0;
-    const pool2 = getPool();
-    if (pool2) {
-      const userRows = await query(`SELECT * FROM users WHERE id = $1`, [account.user_id]);
-      owner = userRows[0];
-    } else {
-      for (const u of inMemoryDb.users.values()) {
-        if (u.id === account.user_id) {
-          owner = u;
-          break;
-        }
+    if (transfer.status !== "pending") {
+      const err = new Error(`Cannot approve transfer in "${transfer.status}" status. Only pending transfers can be approved.`);
+      err.statusCode = 400;
+      throw err;
+    }
+    const wallet = await this.getOrCreateWallet(transfer.user_id, transfer.currency);
+    const tradingAccount = await TradingAccountService.findRawAccount(transfer.trading_account_id);
+    if (!tradingAccount) {
+      const err = new Error(`Trading account "${transfer.trading_account_id}" not found`);
+      err.statusCode = 404;
+      throw err;
+    }
+    const transferAmountDec = toDecimal(transfer.amount);
+    const now = /* @__PURE__ */ new Date();
+    const txnNo = this.generateReference("TXN");
+    const txnId = crypto6.randomUUID();
+    let walletBalanceAfterDec;
+    let tradingBalanceAfterDec;
+    let transactionRecord;
+    const walletBalanceBeforeDec = toDecimal(wallet.balance);
+    const walletReservedDec = toDecimal(wallet.reserved_balance);
+    const tradingBalanceBeforeDec = toDecimal(tradingAccount.balance || "0.00");
+    const walletBalBeforeStr = formatMoney(walletBalanceBeforeDec);
+    const walletResStr = formatMoney(walletReservedDec);
+    const tradingBalBeforeStr = formatMoney(tradingBalanceBeforeDec);
+    if (transfer.direction === "wallet_to_trading") {
+      const walletAvailDec = toDecimal(wallet.available_balance);
+      if (walletAvailDec.lessThan(transferAmountDec)) {
+        throw new Error(
+          `Insufficient wallet funds for approval. Available: $${wallet.available_balance} ${wallet.currency}, Requested: $${transfer.amount}`
+        );
       }
-    }
-    let auditLogs = [];
-    if (pool2) {
-      auditLogs = await query(
-        `SELECT * FROM audit_logs WHERE entity_type = 'trading_account' AND entity_id = $1 ORDER BY created_at DESC`,
-        [accountId]
-      );
+      walletBalanceAfterDec = walletBalanceBeforeDec.minus(transferAmountDec);
+      tradingBalanceAfterDec = tradingBalanceBeforeDec.plus(transferAmountDec);
+      const walletBalAfterStr2 = formatMoney(walletBalanceAfterDec);
+      transactionRecord = {
+        id: txnId,
+        transaction_no: txnNo,
+        user_id: transfer.user_id,
+        wallet_id: wallet.id,
+        type: "transfer_out",
+        amount: formatMoney(transferAmountDec),
+        currency: wallet.currency,
+        balance_before: walletBalBeforeStr,
+        balance_after: walletBalAfterStr2,
+        reserved_before: walletResStr,
+        reserved_after: walletResStr,
+        status: "completed",
+        reference_type: "account_transfer",
+        reference_id: transfer.id,
+        description: `Transfer to Trading Account #${tradingAccount.account_number} (${tradingAccount.platform}) [Ref: ${transfer.reference_no}]`,
+        created_at: now
+      };
+    } else if (transfer.direction === "trading_to_wallet") {
+      if (tradingBalanceBeforeDec.lessThan(transferAmountDec)) {
+        throw new Error(
+          `Insufficient trading account balance for approval. Current balance: $${tradingBalBeforeStr} ${tradingAccount.currency}, Requested: $${transfer.amount}`
+        );
+      }
+      tradingBalanceAfterDec = tradingBalanceBeforeDec.minus(transferAmountDec);
+      walletBalanceAfterDec = walletBalanceBeforeDec.plus(transferAmountDec);
+      const walletBalAfterStr2 = formatMoney(walletBalanceAfterDec);
+      transactionRecord = {
+        id: txnId,
+        transaction_no: txnNo,
+        user_id: transfer.user_id,
+        wallet_id: wallet.id,
+        type: "transfer_in",
+        amount: formatMoney(transferAmountDec),
+        currency: wallet.currency,
+        balance_before: walletBalBeforeStr,
+        balance_after: walletBalAfterStr2,
+        reserved_before: walletResStr,
+        reserved_after: walletResStr,
+        status: "completed",
+        reference_type: "account_transfer",
+        reference_id: transfer.id,
+        description: `Transfer from Trading Account #${tradingAccount.account_number} (${tradingAccount.platform}) [Ref: ${transfer.reference_no}]`,
+        created_at: now
+      };
     } else {
-      auditLogs = inMemoryDb.auditLogs.filter(
-        (log3) => log3.entity_type === "trading_account" && log3.entity_id === accountId
-      );
+      throw new Error(`Invalid transfer direction: ${transfer.direction}`);
     }
-    return {
-      account: {
-        ...account,
-        owner: owner ? {
-          id: owner.id,
-          first_name: owner.first_name,
-          last_name: owner.last_name,
-          email: owner.email,
-          country: owner.country
-        } : void 0
+    const walletBalAfterStr = formatMoney(walletBalanceAfterDec);
+    const tradingBalAfterStr = formatMoney(tradingBalanceAfterDec);
+    if (pool2) {
+      const client = await pool2.connect();
+      try {
+        await client.query("BEGIN");
+        const updateRes = await client.query(
+          `UPDATE account_transfers 
+           SET status = 'approved', approved_by = $1, approved_at = $2, admin_notes = $3, updated_at = $4
+           WHERE id = $5 AND status = 'pending'
+           RETURNING id`,
+          [adminId, now, input2?.admin_notes || null, now, transfer.id]
+        );
+        if (updateRes.rows.length === 0) {
+          throw new Error("Concurrent transfer update detected: transfer was already processed or is no longer pending.");
+        }
+        await client.query(
+          `UPDATE wallets SET balance = $1, updated_at = $2 WHERE id = $3`,
+          [walletBalAfterStr, now, wallet.id]
+        );
+        await client.query(
+          `INSERT INTO transactions (id, transaction_no, user_id, wallet_id, type, amount, currency, balance_before, balance_after, reserved_before, reserved_after, status, reference_type, reference_id, description, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+          [
+            transactionRecord.id,
+            transactionRecord.transaction_no,
+            transactionRecord.user_id,
+            transactionRecord.wallet_id,
+            transactionRecord.type,
+            transactionRecord.amount,
+            transactionRecord.currency,
+            transactionRecord.balance_before,
+            transactionRecord.balance_after,
+            transactionRecord.reserved_before,
+            transactionRecord.reserved_after,
+            transactionRecord.status,
+            transactionRecord.reference_type,
+            transactionRecord.reference_id,
+            transactionRecord.description,
+            transactionRecord.created_at
+          ]
+        );
+        await client.query(
+          `UPDATE trading_accounts 
+           SET balance = $1, updated_at = $2
+           WHERE id = $3`,
+          [tradingBalAfterStr, now, tradingAccount.id]
+        );
+        await client.query("COMMIT");
+      } catch (dbErr) {
+        await client.query("ROLLBACK");
+        throw dbErr;
+      } finally {
+        client.release();
+      }
+      transfer.status = "approved";
+      transfer.approved_by = adminId;
+      transfer.approved_at = now;
+      transfer.admin_notes = input2?.admin_notes || null;
+      transfer.updated_at = now;
+    } else {
+      const current = inMemoryDb.accountTransfers.get(transfer.id);
+      if (!current || current.status !== "pending") {
+        throw new Error("Concurrent transfer update detected: transfer was already processed or is no longer pending.");
+      }
+      transfer.status = "approved";
+      transfer.approved_by = adminId;
+      transfer.approved_at = now;
+      transfer.admin_notes = input2?.admin_notes || null;
+      transfer.updated_at = now;
+      wallet.balance = walletBalAfterStr;
+      wallet.updated_at = now;
+      inMemoryDb.wallets.set(wallet.id, wallet);
+      inMemoryDb.wallets.set(`${wallet.user_id}_${wallet.currency}`, wallet);
+      await TradingAccountService.updateAccountBalance(tradingAccount.id, tradingBalAfterStr);
+      inMemoryDb.transactions.unshift(transactionRecord);
+    }
+    await this.recordAuditLog(
+      adminId,
+      "TRANSFER_APPROVED",
+      "account_transfer",
+      transfer.id,
+      {
+        reference_no: transfer.reference_no,
+        direction: transfer.direction,
+        amount: transfer.amount,
+        currency: transfer.currency,
+        trading_account_id: tradingAccount.id,
+        account_number: tradingAccount.account_number,
+        wallet_balance_before: walletBalBeforeStr,
+        wallet_balance_after: walletBalAfterStr,
+        trading_balance_before: tradingBalBeforeStr,
+        trading_balance_after: tradingBalAfterStr,
+        admin_notes: input2?.admin_notes || null
       },
-      audit_trail: auditLogs
+      ip,
+      userAgent
+    );
+    await NotificationService.createNotification(
+      transfer.user_id,
+      "Transfer Request Approved",
+      `Your transfer of $${transfer.amount} ${transfer.currency} (${transfer.reference_no}) between Wallet and Trading Account #${tradingAccount.account_number} has been approved.`,
+      "trading_account",
+      {
+        transfer_id: transfer.id,
+        reference_no: transfer.reference_no,
+        amount: transfer.amount,
+        currency: transfer.currency,
+        direction: transfer.direction
+      }
+    );
+    const updatedWallet = await this.getOrCreateWallet(transfer.user_id, transfer.currency);
+    const updatedAccount = await TradingAccountService.findRawAccount(tradingAccount.id);
+    return {
+      transfer,
+      transaction: transactionRecord,
+      wallet: updatedWallet,
+      trading_account: updatedAccount
     };
   }
   /**
-   * Approve a pending trading account (Admin workflow)
+   * ADMIN: Rejects a pending transfer request.
+   * Marks request as rejected with reason. No balances are moved.
    */
-  static async approveAccount(adminId, accountId, input2, ip, userAgent) {
-    const account = await this.findRawAccount(accountId);
-    if (!account) {
-      const err = new Error("Trading account not found");
+  static async rejectAccountTransfer(transferId, adminId, input2, ip, userAgent) {
+    const pool2 = getPool();
+    let transfer = null;
+    if (pool2) {
+      const rows = await query("SELECT * FROM account_transfers WHERE id = $1", [transferId]);
+      transfer = rows[0] || null;
+    } else {
+      transfer = inMemoryDb.accountTransfers.get(transferId) || null;
+    }
+    if (!transfer) {
+      const err = new Error(`Transfer request "${transferId}" not found`);
       err.statusCode = 404;
       throw err;
     }
-    if (account.status === "active") {
-      const err = new Error("This trading account is already active");
+    if (transfer.status !== "pending") {
+      const err = new Error(`Cannot reject transfer in "${transfer.status}" status. Only pending transfers can be rejected.`);
       err.statusCode = 400;
       throw err;
     }
     const now = /* @__PURE__ */ new Date();
-    const updatedAccountNumber = input2.account_number?.trim() || account.account_number;
-    const updatedServer = input2.server_name?.trim() || account.server_name;
-    const updatedGroupTier = input2.group_tier?.trim() || account.group_tier;
-    const adminNotes = input2.admin_notes?.trim() || account.admin_notes;
-    const pool2 = getPool();
+    const reason = input2?.rejection_reason || "Rejected by administrator";
     if (pool2) {
-      await query(
-        `UPDATE trading_accounts 
-         SET status = 'active', account_number = $1, server_name = $2, group_tier = $3, admin_notes = $4, approved_at = $5, approved_by = $6, updated_at = $5
-         WHERE id = $7`,
-        [updatedAccountNumber, updatedServer, updatedGroupTier, adminNotes, now, adminId, accountId]
+      const updateRes = await query(
+        `UPDATE account_transfers 
+         SET status = 'rejected', rejected_by = $1, rejected_at = $2, rejection_reason = $3, admin_notes = $4, updated_at = $5
+         WHERE id = $6 AND status = 'pending'
+         RETURNING id`,
+        [adminId, now, reason, input2?.admin_notes || null, now, transfer.id]
       );
-    } else {
-      const record2 = inMemoryDb.tradingAccounts.get(accountId);
-      if (record2) {
-        record2.status = "active";
-        record2.account_number = updatedAccountNumber;
-        record2.server_name = updatedServer;
-        record2.group_tier = updatedGroupTier;
-        record2.admin_notes = adminNotes;
-        record2.approved_at = now;
-        record2.approved_by = adminId;
-        record2.updated_at = now;
+      if (Array.isArray(updateRes) && updateRes.length === 0) {
+        throw new Error("Concurrent transfer update detected: transfer was already processed or is no longer pending.");
       }
+      transfer.status = "rejected";
+      transfer.rejected_by = adminId;
+      transfer.rejected_at = now;
+      transfer.rejection_reason = reason;
+      transfer.admin_notes = input2?.admin_notes || null;
+      transfer.updated_at = now;
+    } else {
+      const current = inMemoryDb.accountTransfers.get(transfer.id);
+      if (!current || current.status !== "pending") {
+        throw new Error("Concurrent transfer update detected: transfer was already processed or is no longer pending.");
+      }
+      transfer.status = "rejected";
+      transfer.rejected_by = adminId;
+      transfer.rejected_at = now;
+      transfer.rejection_reason = reason;
+      transfer.admin_notes = input2?.admin_notes || null;
+      transfer.updated_at = now;
     }
-    account.status = "active";
-    account.account_number = updatedAccountNumber;
-    account.server_name = updatedServer;
-    account.group_tier = updatedGroupTier;
-    account.admin_notes = adminNotes;
-    account.approved_at = now;
-    account.approved_by = adminId;
-    account.updated_at = now;
     await this.recordAuditLog(
       adminId,
-      "TRADING_ACCOUNT_APPROVED",
-      accountId,
+      "TRANSFER_REJECTED",
+      "account_transfer",
+      transfer.id,
       {
-        account_number: account.account_number,
-        server_name: account.server_name,
-        group_tier: account.group_tier,
-        admin_notes: adminNotes
+        reference_no: transfer.reference_no,
+        direction: transfer.direction,
+        amount: transfer.amount,
+        currency: transfer.currency,
+        trading_account_id: transfer.trading_account_id,
+        rejection_reason: reason,
+        admin_notes: input2?.admin_notes || null
       },
       ip,
       userAgent
     );
     await NotificationService.createNotification(
-      account.user_id,
-      "Trading Account Approved",
-      `Your trading account #${account.account_number} (${account.platform}) is now active.`,
+      transfer.user_id,
+      "Transfer Request Rejected",
+      `Your transfer request ${transfer.reference_no} ($${transfer.amount} ${transfer.currency}) was rejected: ${reason}`,
       "trading_account",
-      { account_id: account.id, account_number: account.account_number, platform: account.platform }
-    );
-    return account;
-  }
-  /**
-   * Reject a pending trading account (Admin workflow)
-   */
-  static async rejectAccount(adminId, accountId, input2, ip, userAgent) {
-    const account = await this.findRawAccount(accountId);
-    if (!account) {
-      const err = new Error("Trading account not found");
-      err.statusCode = 404;
-      throw err;
-    }
-    const now = /* @__PURE__ */ new Date();
-    const rejectionReason = input2.rejection_reason.trim();
-    const adminNotes = input2.admin_notes?.trim() || account.admin_notes;
-    const pool2 = getPool();
-    if (pool2) {
-      await query(
-        `UPDATE trading_accounts 
-         SET status = 'disabled', rejection_reason = $1, admin_notes = $2, updated_at = $3
-         WHERE id = $4`,
-        [rejectionReason, adminNotes, now, accountId]
-      );
-    } else {
-      const record2 = inMemoryDb.tradingAccounts.get(accountId);
-      if (record2) {
-        record2.status = "disabled";
-        record2.rejection_reason = rejectionReason;
-        record2.admin_notes = adminNotes;
-        record2.updated_at = now;
-      }
-    }
-    account.status = "disabled";
-    account.rejection_reason = rejectionReason;
-    account.admin_notes = adminNotes;
-    account.updated_at = now;
-    await this.recordAuditLog(
-      adminId,
-      "TRADING_ACCOUNT_REJECTED",
-      accountId,
       {
-        account_number: account.account_number,
-        rejection_reason: rejectionReason,
-        admin_notes: adminNotes
-      },
-      ip,
-      userAgent
-    );
-    await NotificationService.createNotification(
-      account.user_id,
-      "Trading Account Application Rejected",
-      `Your trading account registration was rejected. Reason: ${rejectionReason}`,
-      "trading_account",
-      { account_id: account.id, rejection_reason: rejectionReason }
-    );
-    return account;
-  }
-  /**
-   * Change account status (e.g. active, read_only, disabled, archived) (Admin workflow)
-   */
-  static async updateAccountStatus(adminId, accountId, newStatus, adminNotes, ip, userAgent) {
-    const account = await this.findRawAccount(accountId);
-    if (!account) {
-      const err = new Error("Trading account not found");
-      err.statusCode = 404;
-      throw err;
-    }
-    const oldStatus = account.status;
-    const now = /* @__PURE__ */ new Date();
-    const notes = adminNotes?.trim() || account.admin_notes;
-    const pool2 = getPool();
-    if (pool2) {
-      await query(
-        `UPDATE trading_accounts SET status = $1, admin_notes = $2, updated_at = $3 WHERE id = $4`,
-        [newStatus, notes, now, accountId]
-      );
-    } else {
-      const record2 = inMemoryDb.tradingAccounts.get(accountId);
-      if (record2) {
-        record2.status = newStatus;
-        record2.admin_notes = notes;
-        record2.updated_at = now;
+        transfer_id: transfer.id,
+        reference_no: transfer.reference_no,
+        amount: transfer.amount,
+        currency: transfer.currency,
+        rejection_reason: reason
       }
-    }
-    account.status = newStatus;
-    account.admin_notes = notes;
-    account.updated_at = now;
-    await this.recordAuditLog(
-      adminId,
-      "TRADING_ACCOUNT_STATUS_CHANGED",
-      accountId,
-      {
-        account_number: account.account_number,
-        previous_status: oldStatus,
-        new_status: newStatus,
-        admin_notes: notes
-      },
-      ip,
-      userAgent
     );
-    return account;
-  }
-  /**
-   * Update trading account metadata such as leverage, server name, or account type (Admin workflow)
-   */
-  static async updateMetadataAdmin(adminId, accountId, input2, ip, userAgent) {
-    const account = await this.findRawAccount(accountId);
-    if (!account) {
-      const err = new Error("Trading account not found");
-      err.statusCode = 404;
-      throw err;
-    }
-    const now = /* @__PURE__ */ new Date();
-    const updatedLeverage = input2.leverage || account.leverage;
-    const updatedServer = input2.server_name?.trim() || account.server_name;
-    const updatedGroupTier = input2.group_tier !== void 0 ? input2.group_tier?.trim() || null : account.group_tier;
-    const updatedType = input2.account_type || account.account_type;
-    const updatedAdminNotes = input2.admin_notes?.trim() || account.admin_notes;
-    const pool2 = getPool();
-    if (pool2) {
-      await query(
-        `UPDATE trading_accounts 
-         SET leverage = $1, server_name = $2, group_tier = $3, account_type = $4, admin_notes = $5, updated_at = $6
-         WHERE id = $7`,
-        [updatedLeverage, updatedServer, updatedGroupTier, updatedType, updatedAdminNotes, now, accountId]
-      );
-    } else {
-      const record2 = inMemoryDb.tradingAccounts.get(accountId);
-      if (record2) {
-        record2.leverage = updatedLeverage;
-        record2.server_name = updatedServer;
-        record2.group_tier = updatedGroupTier;
-        record2.account_type = updatedType;
-        record2.admin_notes = updatedAdminNotes;
-        record2.updated_at = now;
-      }
-    }
-    account.leverage = updatedLeverage;
-    account.server_name = updatedServer;
-    account.group_tier = updatedGroupTier;
-    account.account_type = updatedType;
-    account.admin_notes = updatedAdminNotes;
-    account.updated_at = now;
-    await this.recordAuditLog(
-      adminId,
-      "TRADING_ACCOUNT_METADATA_UPDATED",
-      accountId,
-      {
-        account_number: account.account_number,
-        leverage: account.leverage,
-        server_name: account.server_name,
-        group_tier: account.group_tier,
-        account_type: account.account_type,
-        admin_notes: updatedAdminNotes
-      },
-      ip,
-      userAgent
-    );
-    return account;
-  }
-  /**
-   * Internal helper to fetch an account record without ownership checks
-   */
-  static async findRawAccount(accountId) {
-    const pool2 = getPool();
-    if (pool2) {
-      const rows = await query(
-        `SELECT * FROM trading_accounts WHERE id = $1`,
-        [accountId]
-      );
-      return rows[0] || null;
-    }
-    const record2 = inMemoryDb.tradingAccounts.get(accountId);
-    return record2 ? { ...record2 } : null;
+    return { transfer };
   }
 };
 
@@ -52903,8 +54612,6 @@ var KycService = class {
         `SELECT * FROM kyc_profiles WHERE user_id = $1 LIMIT 1`,
         [userId]
       );
-      if (profiles.length === 0) return null;
-      const profile = profiles[0];
       const documents = await query(
         `SELECT * FROM kyc_documents WHERE user_id = $1 ORDER BY created_at DESC`,
         [userId]
@@ -52912,9 +54619,38 @@ var KycService = class {
       const docsWithUrls = await Promise.all(
         documents.map(async (doc) => ({
           ...doc,
+          storage_key: doc.object_key,
           download_url: await StorageService.getDownloadUrl(doc.object_key)
         }))
       );
+      if (profiles.length === 0) {
+        if (documents.length === 0) return null;
+        return {
+          id: "",
+          user_id: userId,
+          first_name: "",
+          last_name: "",
+          date_of_birth: "",
+          nationality: "",
+          country_of_residence: "",
+          address_line1: "",
+          city: "",
+          postal_code: "",
+          id_document_type: "passport",
+          id_document_number: "",
+          id_expiry_date: null,
+          status: "pending",
+          rejection_reason: null,
+          admin_notes: null,
+          submitted_at: null,
+          reviewed_at: null,
+          reviewed_by: null,
+          created_at: /* @__PURE__ */ new Date(),
+          updated_at: /* @__PURE__ */ new Date(),
+          documents: docsWithUrls
+        };
+      }
+      const profile = profiles[0];
       return {
         ...profile,
         documents: docsWithUrls
@@ -52929,14 +54665,41 @@ var KycService = class {
           }
         }
       }
-      if (!profile) return null;
       const documents = Array.from(inMemoryDb.kycDocuments.values()).filter((d5) => d5.user_id === userId).sort((a5, b5) => b5.created_at.getTime() - a5.created_at.getTime());
       const docsWithUrls = await Promise.all(
         documents.map(async (doc) => ({
           ...doc,
+          storage_key: doc.object_key,
           download_url: await StorageService.getDownloadUrl(doc.object_key)
         }))
       );
+      if (!profile) {
+        if (documents.length === 0) return null;
+        return {
+          id: "",
+          user_id: userId,
+          first_name: "",
+          last_name: "",
+          date_of_birth: "",
+          nationality: "",
+          country_of_residence: "",
+          address_line1: "",
+          city: "",
+          postal_code: "",
+          id_document_type: "passport",
+          id_document_number: "",
+          id_expiry_date: null,
+          status: "pending",
+          rejection_reason: null,
+          admin_notes: null,
+          submitted_at: null,
+          reviewed_at: null,
+          reviewed_by: null,
+          created_at: /* @__PURE__ */ new Date(),
+          updated_at: /* @__PURE__ */ new Date(),
+          documents: docsWithUrls
+        };
+      }
       return {
         ...profile,
         documents: docsWithUrls
@@ -52966,6 +54729,7 @@ var KycService = class {
       const docsWithUrls = await Promise.all(
         documents.map(async (doc) => ({
           ...doc,
+          storage_key: doc.object_key,
           download_url: await StorageService.getDownloadUrl(doc.object_key)
         }))
       );
@@ -52988,6 +54752,7 @@ var KycService = class {
       const docsWithUrls = await Promise.all(
         documents.map(async (doc) => ({
           ...doc,
+          storage_key: doc.object_key,
           download_url: await StorageService.getDownloadUrl(doc.object_key)
         }))
       );
@@ -53223,6 +54988,7 @@ var KycService = class {
       );
       return {
         ...rows[0],
+        storage_key: record2.object_key,
         download_url: storageResult.url
       };
     } else {
@@ -53242,6 +55008,7 @@ var KycService = class {
       );
       return {
         ...record2,
+        storage_key: record2.object_key,
         download_url: storageResult.url
       };
     }
@@ -53721,6 +55488,7 @@ var SupportService = class {
     const attsWithUrls = await Promise.all(
       attachments.map(async (att) => ({
         ...att,
+        storage_key: att.object_key,
         download_url: await StorageService.getDownloadUrl(att.object_key)
       }))
     );
@@ -73882,6 +75650,7 @@ var ResetPasswordSchema = external_exports.object({
 });
 var CreateDepositSchema = external_exports.object({
   payment_method_id: external_exports.string().optional().nullable(),
+  payment_method_name: external_exports.string().max(255).optional().nullable(),
   amount: external_exports.string().min(1, "Amount is required").refine((val) => !isNaN(Number(val)) && Number(val) > 0, {
     message: "Deposit amount must be a positive number greater than 0"
   }),
@@ -73927,22 +75696,40 @@ var ManualAdjustmentSchema = external_exports.object({
   }),
   description: external_exports.string().min(3, "Adjustment description / justification is required")
 });
+var CreateAccountTransferSchema = external_exports.object({
+  trading_account_id: external_exports.string().min(1, "Trading account ID is required"),
+  direction: external_exports.enum(["wallet_to_trading", "trading_to_wallet"], {
+    message: "Direction must be wallet_to_trading or trading_to_wallet"
+  }),
+  amount: external_exports.string().min(1, "Amount is required").refine((val) => !isNaN(Number(val)) && Number(val) > 0, {
+    message: "Transfer amount must be a positive number greater than 0"
+  }),
+  currency: external_exports.string().optional().default("USD"),
+  client_notes: external_exports.string().max(500).optional().nullable()
+});
+var ApproveAccountTransferSchema = external_exports.object({
+  admin_notes: external_exports.string().max(500).optional().nullable()
+});
+var RejectAccountTransferSchema = external_exports.object({
+  rejection_reason: external_exports.string().min(1, "Rejection reason is required").max(500),
+  admin_notes: external_exports.string().max(500).optional().nullable()
+});
 var RegisterTradingAccountSchema = external_exports.object({
-  platform: external_exports.enum(["MT4", "MT5", "cTrader", "WebTrader"]),
+  platform: external_exports.string().min(1, "Trading platform is required").max(50),
   account_type: external_exports.enum(["standard", "raw_spread", "pro", "islamic"]).default("standard"),
-  currency: external_exports.string().min(3).max(5).default("USD"),
-  leverage: external_exports.enum(["1:50", "1:100", "1:200", "1:400", "1:500"]).default("1:100"),
+  currency: external_exports.string().min(3).max(10).default("USD"),
+  leverage: external_exports.string().min(1).max(20).default("1:100"),
   nickname: external_exports.string().max(100).optional().nullable(),
   is_demo: external_exports.boolean().default(false),
   server_name: external_exports.string().max(100).optional().nullable()
 });
 var LinkTradingAccountSchema = external_exports.object({
   account_number: external_exports.string().min(4, "Account number must be at least 4 characters").max(50),
-  platform: external_exports.enum(["MT4", "MT5", "cTrader", "WebTrader"]),
+  platform: external_exports.string().min(1, "Trading platform is required").max(50),
   server_name: external_exports.string().min(1, "Trading server name is required").max(100),
   account_type: external_exports.enum(["standard", "raw_spread", "pro", "islamic"]).default("standard"),
-  currency: external_exports.string().min(3).max(5).default("USD"),
-  leverage: external_exports.enum(["1:50", "1:100", "1:200", "1:400", "1:500"]).default("1:100"),
+  currency: external_exports.string().min(3).max(10).default("USD"),
+  leverage: external_exports.string().min(1).max(20).default("1:100"),
   nickname: external_exports.string().max(100).optional().nullable(),
   investor_notes: external_exports.string().max(500).optional().nullable()
 });
@@ -73950,7 +75737,7 @@ var UpdateTradingAccountNicknameSchema = external_exports.object({
   nickname: external_exports.string().max(100).optional().nullable()
 });
 var RequestLeverageChangeSchema = external_exports.object({
-  requested_leverage: external_exports.enum(["1:50", "1:100", "1:200", "1:400", "1:500"]),
+  requested_leverage: external_exports.string().min(1).max(20),
   reason: external_exports.string().max(300).optional().nullable()
 });
 var ApproveTradingAccountSchema = external_exports.object({
@@ -73968,11 +75755,19 @@ var UpdateTradingAccountStatusSchema = external_exports.object({
   admin_notes: external_exports.string().max(500).optional().nullable()
 });
 var AdminUpdateTradingAccountMetadataSchema = external_exports.object({
-  leverage: external_exports.enum(["1:50", "1:100", "1:200", "1:400", "1:500"]).optional(),
-  server_name: external_exports.string().max(100).optional(),
+  account_number: external_exports.string().min(3).max(50).optional(),
+  password: external_exports.string().min(1).max(100).optional().nullable(),
+  platform: external_exports.string().min(1).max(50).optional(),
+  server_name: external_exports.string().max(100).optional().nullable(),
+  currency: external_exports.string().min(3).max(10).optional(),
+  leverage: external_exports.string().max(20).optional(),
+  balance: external_exports.string().max(30).optional(),
+  status: external_exports.enum(["pending_approval", "active", "read_only", "disabled", "archived"]).optional(),
+  terminal_url: external_exports.string().max(500).optional().nullable(),
   group_tier: external_exports.string().max(100).optional().nullable(),
   account_type: external_exports.enum(["standard", "raw_spread", "pro", "islamic"]).optional(),
-  admin_notes: external_exports.string().max(500).optional().nullable()
+  admin_notes: external_exports.string().max(500).optional().nullable(),
+  nickname: external_exports.string().max(100).optional().nullable()
 });
 var KycProfileSchema = external_exports.object({
   first_name: external_exports.string().trim().min(1, "First name is required").max(100),
@@ -73994,21 +75789,43 @@ var KycReviewSchema = external_exports.object({
   admin_notes: external_exports.string().max(500).optional().nullable()
 });
 var KycDocumentUploadSchema = external_exports.object({
-  document_type: external_exports.enum(["id_front", "id_back", "passport", "proof_of_address", "other"]),
+  document_type: external_exports.preprocess((val) => {
+    if (typeof val !== "string") return "other";
+    const v = val.toLowerCase().trim();
+    if (v === "national_id" || v === "drivers_license") return "id_front";
+    return v;
+  }, external_exports.enum(["id_front", "id_back", "passport", "proof_of_address", "other"])),
   original_filename: external_exports.string().min(1).max(255),
-  mime_type: external_exports.enum(["image/jpeg", "image/png", "image/webp", "application/pdf"]),
+  mime_type: external_exports.preprocess((val) => {
+    if (typeof val === "string" && ["image/jpeg", "image/png", "image/webp", "application/pdf"].includes(val)) {
+      return val;
+    }
+    return val;
+  }, external_exports.enum(["image/jpeg", "image/png", "image/webp", "application/pdf"])),
   file_size: external_exports.number().int().positive().max(10 * 1024 * 1024, "Maximum document size is 10MB"),
   file_base64: external_exports.string().min(1, "File content is required")
 });
 var CreateSupportTicketSchema = external_exports.object({
   subject: external_exports.string().trim().min(3, "Subject must be at least 3 characters").max(255),
-  category: external_exports.enum(["general", "deposit_withdrawal", "trading", "verification_kyc", "technical"]).default("general"),
+  category: external_exports.preprocess((val) => {
+    if (typeof val !== "string") return "general";
+    const c5 = val.toLowerCase().trim();
+    if (c5 === "account" || c5 === "other") return "general";
+    if (c5 === "deposit" || c5 === "withdrawal") return "deposit_withdrawal";
+    if (c5 === "kyc") return "verification_kyc";
+    return c5;
+  }, external_exports.enum(["general", "deposit_withdrawal", "trading", "verification_kyc", "technical"])).default("general"),
   priority: external_exports.enum(["low", "medium", "high", "urgent"]).default("medium"),
   message: external_exports.string().trim().min(5, "Message must be at least 5 characters").max(5e3),
   attachments: external_exports.array(
     external_exports.object({
       original_filename: external_exports.string().min(1).max(255),
-      mime_type: external_exports.enum(["image/jpeg", "image/png", "image/webp", "application/pdf"]),
+      mime_type: external_exports.preprocess((val) => {
+        if (typeof val === "string" && ["image/jpeg", "image/png", "image/webp", "application/pdf"].includes(val)) {
+          return val;
+        }
+        return val;
+      }, external_exports.enum(["image/jpeg", "image/png", "image/webp", "application/pdf"])),
       file_size: external_exports.number().int().positive().max(10 * 1024 * 1024),
       file_base64: external_exports.string().min(1)
     })
@@ -74020,7 +75837,12 @@ var ReplySupportTicketSchema = external_exports.object({
   attachments: external_exports.array(
     external_exports.object({
       original_filename: external_exports.string().min(1).max(255),
-      mime_type: external_exports.enum(["image/jpeg", "image/png", "image/webp", "application/pdf"]),
+      mime_type: external_exports.preprocess((val) => {
+        if (typeof val === "string" && ["image/jpeg", "image/png", "image/webp", "application/pdf"].includes(val)) {
+          return val;
+        }
+        return val;
+      }, external_exports.enum(["image/jpeg", "image/png", "image/webp", "application/pdf"])),
       file_size: external_exports.number().int().positive().max(10 * 1024 * 1024),
       file_base64: external_exports.string().min(1)
     })
@@ -74373,6 +76195,39 @@ var handler = async (event, context) => {
         body: JSON.stringify({ status: "success", data: res })
       };
     }
+    const clientDeleteMatch = path2.match(/^\/admin\/clients\/([^/]+)$/);
+    if (clientDeleteMatch && event.httpMethod === "DELETE") {
+      const authHeader2 = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader2);
+      if (!user) {
+        return {
+          statusCode: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "error", message: "Unauthorized." })
+        };
+      }
+      if (user.role !== "admin") {
+        return {
+          statusCode: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "error", message: "Forbidden. Admin credentials required." })
+        };
+      }
+      const clientId = clientDeleteMatch[1];
+      const body = parseRequestBody(event.body);
+      const res = await AuthService.deleteClient(
+        user.id,
+        clientId,
+        { confirmEmail: body?.confirmEmail },
+        clientIp,
+        userAgent
+      );
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "success", ...res })
+      };
+    }
     if (path2 === "/admin/notifications/broadcast" && event.httpMethod === "POST") {
       const authHeader2 = event.headers.authorization || event.headers.Authorization;
       const user = await authenticateRequest(authHeader2);
@@ -74613,6 +76468,31 @@ var handler = async (event, context) => {
         body: JSON.stringify({ status: "success", data: transactions })
       };
     }
+    if (path2 === "/financial/transfers" && event.httpMethod === "POST" && authUser) {
+      const body = parseRequestBody(event.body);
+      const validated = CreateAccountTransferSchema.parse(body);
+      const result = await FinancialService.createAccountTransfer(authUser.id, validated, clientIp, userAgent);
+      return {
+        statusCode: 201,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "success", data: result })
+      };
+    }
+    if (path2 === "/financial/transfers" && event.httpMethod === "GET" && authUser) {
+      const status = event.queryStringParameters?.status;
+      const tradingAccountId = event.queryStringParameters?.trading_account_id;
+      const targetUserId = authUser.role === "admin" ? event.queryStringParameters?.user_id : authUser.id;
+      const transfers = await FinancialService.getAccountTransfers({
+        userId: targetUserId,
+        status,
+        tradingAccountId
+      });
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "success", data: transfers })
+      };
+    }
     if (path2.startsWith("/financial/admin/")) {
       if (!authUser || authUser.role !== "admin") {
         return {
@@ -74669,6 +76549,30 @@ var handler = async (event, context) => {
           body: JSON.stringify({ status: "success", data: result })
         };
       }
+      const approveTrfMatch = path2.match(/^\/financial\/admin\/transfers\/([^/]+)\/approve$/);
+      if (approveTrfMatch && event.httpMethod === "POST") {
+        const transferId = approveTrfMatch[1];
+        const body = parseRequestBody(event.body);
+        const validated = ApproveAccountTransferSchema.parse(body);
+        const result = await FinancialService.approveAccountTransfer(transferId, authUser.id, validated, clientIp, userAgent);
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "success", data: result })
+        };
+      }
+      const rejectTrfMatch = path2.match(/^\/financial\/admin\/transfers\/([^/]+)\/reject$/);
+      if (rejectTrfMatch && event.httpMethod === "POST") {
+        const transferId = rejectTrfMatch[1];
+        const body = parseRequestBody(event.body);
+        const validated = RejectAccountTransferSchema.parse(body);
+        const result = await FinancialService.rejectAccountTransfer(transferId, authUser.id, validated, clientIp, userAgent);
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "success", data: result })
+        };
+      }
       if (path2 === "/financial/admin/adjustments" && event.httpMethod === "POST") {
         const body = parseRequestBody(event.body);
         const validated = ManualAdjustmentSchema.parse(body);
@@ -74694,7 +76598,7 @@ var handler = async (event, context) => {
         };
       }
     }
-    const isTradingAccountRoute = path2.startsWith("/trading-accounts") || path2.startsWith("/admin/trading-accounts");
+    const isTradingAccountRoute = path2.startsWith("/trading-accounts") || path2.startsWith("/admin/trading-accounts") || path2.startsWith("/admin/trading-password-resets");
     if (isTradingAccountRoute) {
       if (!authUser) {
         return {
@@ -74703,7 +76607,7 @@ var handler = async (event, context) => {
           body: JSON.stringify({ status: "error", message: "Authentication required." })
         };
       }
-      if (path2.startsWith("/admin/trading-accounts") && authUser.role !== "admin") {
+      if ((path2.startsWith("/admin/trading-accounts") || path2.startsWith("/admin/trading-password-resets")) && authUser.role !== "admin") {
         return {
           statusCode: 403,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -74889,6 +76793,108 @@ var handler = async (event, context) => {
           statusCode: 200,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
           body: JSON.stringify({ status: "success", data: detail })
+        };
+      }
+      if (adminDetailMatch && event.httpMethod === "DELETE") {
+        const accountId = adminDetailMatch[1];
+        const result = await TradingAccountService.deleteAccountAdmin(
+          authUser.id,
+          accountId,
+          clientIp,
+          userAgent
+        );
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "success", ...result })
+        };
+      }
+      const adminAssignMatch = path2.match(/^\/admin\/trading-accounts\/([^/]+)\/assign$/);
+      if (adminAssignMatch && event.httpMethod === "POST") {
+        const accountId = adminAssignMatch[1];
+        const body = parseRequestBody(event.body);
+        if (!body?.target_client_id) {
+          return {
+            statusCode: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({ status: "error", message: "target_client_id is required" })
+          };
+        }
+        const updated = await TradingAccountService.assignAccountToClientAdmin(
+          authUser.id,
+          accountId,
+          body.target_client_id,
+          clientIp,
+          userAgent
+        );
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "success", data: updated, message: "Trading account successfully assigned to client." })
+        };
+      }
+      const passwordResetReqMatch = path2.match(/^\/trading-accounts\/([^/]+)\/password-reset$/);
+      if (passwordResetReqMatch && event.httpMethod === "POST") {
+        const accountId = passwordResetReqMatch[1];
+        const body = parseRequestBody(event.body);
+        const result = await TradingAccountService.requestPasswordReset(
+          authUser.id,
+          accountId,
+          body?.reason,
+          clientIp,
+          userAgent
+        );
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "success", data: result, message: "Password reset request submitted for administrative review." })
+        };
+      }
+      if (path2 === "/trading-accounts/password-resets" && event.httpMethod === "GET") {
+        const resets = await TradingAccountService.getUserPasswordResets(authUser.id);
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "success", data: resets })
+        };
+      }
+      if (path2 === "/admin/trading-password-resets" && event.httpMethod === "GET") {
+        const status = event.queryStringParameters?.status;
+        const search = event.queryStringParameters?.search;
+        const list2 = await TradingAccountService.getAllPasswordResetsAdmin({ status, search });
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "success", data: list2 })
+        };
+      }
+      const processResetMatch = path2.match(/^\/admin\/trading-password-resets\/([^/]+)\/process$/);
+      if (processResetMatch && event.httpMethod === "POST") {
+        const requestId = processResetMatch[1];
+        const body = parseRequestBody(event.body);
+        if (!body?.action || !["approve", "reject"].includes(body.action)) {
+          return {
+            statusCode: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({ status: "error", message: "Action must be 'approve' or 'reject'" })
+          };
+        }
+        const result = await TradingAccountService.processPasswordResetAdmin(
+          authUser.id,
+          requestId,
+          body.action,
+          {
+            new_password: body.new_password,
+            admin_notes: body.admin_notes,
+            rejection_reason: body.rejection_reason
+          },
+          clientIp,
+          userAgent
+        );
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "success", ...result })
         };
       }
     }

@@ -14,6 +14,8 @@ import {
   RefreshCw,
   Search,
   Check,
+  X,
+  Wallet,
   User,
   DollarSign,
   Lock,
@@ -51,6 +53,27 @@ interface WithdrawalRecord {
   admin_notes?: string;
   rejection_reason?: string;
   created_at: string;
+}
+
+interface AccountTransferRecord {
+  id: string;
+  reference_no: string;
+  user_id: string;
+  trading_account_id: string;
+  direction: 'wallet_to_trading' | 'trading_to_wallet';
+  amount: string;
+  currency: string;
+  status: 'pending' | 'approved' | 'rejected';
+  client_notes?: string;
+  admin_notes?: string;
+  rejection_reason?: string;
+  account_number?: string;
+  platform?: string;
+  user_name?: string;
+  user_email?: string;
+  created_at: string;
+  approved_at?: string;
+  rejected_at?: string;
 }
 
 interface TransactionRecord {
@@ -98,6 +121,7 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
 
   const [deposits, setDeposits] = useState<DepositRecord[]>([]);
   const [withdrawals, setWithdrawals] = useState<WithdrawalRecord[]>([]);
+  const [transfers, setTransfers] = useState<AccountTransferRecord[]>([]);
   const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogRecord[]>([]);
 
@@ -117,10 +141,11 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
 
   // Approval / Rejection Action Modals
   const [actionItem, setActionItem] = useState<{
-    type: 'approve_deposit' | 'reject_deposit' | 'approve_withdrawal' | 'reject_withdrawal';
+    type: 'approve_deposit' | 'reject_deposit' | 'approve_withdrawal' | 'reject_withdrawal' | 'approve_transfer' | 'reject_transfer';
     id: string;
     reference: string;
     amount: string;
+    direction?: string;
   } | null>(null);
   const [adminNotes, setAdminNotes] = useState('');
   const [rejectionReason, setRejectionReason] = useState('');
@@ -138,20 +163,23 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
       setError(null);
       const headers = { Authorization: `Bearer ${token}` };
 
-      const [resDep, resWth, resTxn, resAudit] = await Promise.all([
+      const [resDep, resWth, resTrf, resTxn, resAudit] = await Promise.all([
         fetch('/api/financial/deposits', { headers }),
         fetch('/api/financial/withdrawals', { headers }),
+        fetch('/api/financial/transfers', { headers }),
         fetch('/api/financial/transactions', { headers }),
         fetch('/api/financial/admin/audit-logs', { headers }),
       ]);
 
       const dataDep = await resDep.json();
       const dataWth = await resWth.json();
+      const dataTrf = await resTrf.json();
       const dataTxn = await resTxn.json();
       const dataAudit = await resAudit.json();
 
       if (resDep.ok) setDeposits(dataDep.data);
       if (resWth.ok) setWithdrawals(dataWth.data);
+      if (resTrf.ok) setTransfers(dataTrf.data || []);
       if (resTxn.ok) setTransactions(dataTxn.data);
       if (resAudit.ok) setAuditLogs(dataAudit.data);
     } catch (err: any) {
@@ -196,6 +224,13 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
       } else if (actionItem.type === 'reject_withdrawal') {
         if (!rejectionReason.trim()) throw new Error('Rejection reason is strictly required');
         endpoint = `/api/financial/admin/withdrawals/${actionItem.id}/reject`;
+        payload = { rejection_reason: rejectionReason, admin_notes: adminNotes || null };
+      } else if (actionItem.type === 'approve_transfer') {
+        endpoint = `/api/financial/admin/transfers/${actionItem.id}/approve`;
+        payload = { admin_notes: adminNotes || null };
+      } else if (actionItem.type === 'reject_transfer') {
+        if (!rejectionReason.trim()) throw new Error('Rejection reason is strictly required');
+        endpoint = `/api/financial/admin/transfers/${actionItem.id}/reject`;
         payload = { rejection_reason: rejectionReason, admin_notes: adminNotes || null };
       }
 
@@ -311,11 +346,24 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
   });
 
   const transferTransactions = transactions.filter(
-    (t) => t.type === 'internal_transfer' || t.type === 'transfer' || t.type.includes('transfer')
+    (t) => t.type === 'internal_transfer' || t.type === 'transfer' || t.type === 'transfer_in' || t.type === 'transfer_out' || t.type.includes('transfer')
   );
+
+  // Filtered internal account transfers
+  const filteredTransfers = transfers.filter((t) => {
+    const matchesStatus = statusFilter === 'all' || t.status === statusFilter;
+    const matchesSearch =
+      !searchTerm ||
+      t.reference_no.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      t.user_id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (t.account_number && t.account_number.toLowerCase().includes(searchTerm.toLowerCase())) ||
+      (t.client_notes && t.client_notes.toLowerCase().includes(searchTerm.toLowerCase()));
+    return matchesStatus && matchesSearch;
+  });
 
   const pendingDepositsCount = deposits.filter((d) => d.status === 'pending').length;
   const pendingWithdrawalsCount = withdrawals.filter((w) => w.status === 'pending').length;
+  const pendingTransfersCount = transfers.filter((t) => t.status === 'pending').length;
 
   return (
     <div className="space-y-6">
@@ -368,7 +416,7 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
         </div>
 
         {/* Action Counters */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
           <div
             onClick={() => {
               setActiveTab('deposits');
@@ -399,6 +447,22 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
             <div className="text-[11px] text-slate-400 uppercase font-semibold">Pending Payouts</div>
             <div className="text-xl font-bold text-amber-400 mt-0.5">{pendingWithdrawalsCount}</div>
             <div className="text-[10px] text-slate-500 mt-1">Funds reserved, await dispatch</div>
+          </div>
+
+          <div
+            onClick={() => {
+              setActiveTab('transfers');
+              setStatusFilter('pending');
+            }}
+            className={`p-3 rounded-lg border transition cursor-pointer ${
+              pendingTransfersCount > 0
+                ? 'bg-cyan-500/10 border-cyan-500/30 hover:bg-cyan-500/20'
+                : 'bg-[#21262d] border-[#30363d]'
+            }`}
+          >
+            <div className="text-[11px] text-slate-400 uppercase font-semibold">Pending Transfers</div>
+            <div className="text-xl font-bold text-cyan-400 mt-0.5">{pendingTransfersCount}</div>
+            <div className="text-[10px] text-slate-500 mt-1">Wallet ↔ Trading Desk</div>
           </div>
 
           <div
@@ -469,9 +533,15 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
             >
               <ArrowLeftRight className="w-4 h-4" />
               <span>Internal Transfers Queue</span>
-              <span className="px-1.5 py-0.2 rounded-full bg-slate-800 text-slate-400 font-mono text-[10px] border border-slate-700">
-                Offline
-              </span>
+              {pendingTransfersCount > 0 ? (
+                <span className="px-1.5 py-0.2 rounded-full bg-cyan-500 text-slate-950 font-bold text-[10px]">
+                  {pendingTransfersCount}
+                </span>
+              ) : (
+                <span className="px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-400 font-mono text-[10px] border border-emerald-500/30">
+                  Active
+                </span>
+              )}
             </button>
 
             <button
@@ -796,62 +866,170 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
             </div>
           )}
 
-          {/* INTERNAL TRANSFERS QUEUE & ARCHITECTURAL GOVERNANCE */}
+          {/* INTERNAL TRANSFERS QUEUE & AUDIT */}
           {activeTab === 'transfers' && (
             <div className="space-y-6">
-              {/* Architectural Capability Boundary Banner */}
-              <div className="bg-[#10141d] border border-cyan-500/30 rounded-xl p-5 space-y-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex items-start gap-3">
-                    <div className="p-2.5 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+              {/* Active Transfer Processing Queue */}
+              <div className="bg-[#161b22] border border-[#30363d] rounded-xl overflow-hidden shadow-xl">
+                <div className="p-4 border-b border-[#30363d] flex flex-wrap items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
                       <ArrowLeftRight className="w-5 h-5" />
                     </div>
                     <div>
                       <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                        <span>Wallet ↔ Trading Account Bridge Queue</span>
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                          Bridge Offline / Backend Support Required
+                        <span>Internal Account Transfers Review Queue</span>
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-cyan-500/10 text-cyan-300 border border-cyan-500/20">
+                          {filteredTransfers.length} requests
                         </span>
                       </h3>
-                      <p className="text-xs text-slate-400 mt-1 max-w-2xl">
-                        Internal fund transfers between CRM Wallets and external trading server engines (MetaTrader 4, MetaTrader 5, cTrader) are intentionally gated to preserve immutable accounting ledger invariants.
+                      <p className="text-xs text-slate-400">
+                        Review, verify, and approve internal capital movements between CRM Wallets and MetaTrader accounts.
                       </p>
                     </div>
                   </div>
-                </div>
 
-                {/* Technical Boundary Specification Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
-                  <div className="p-3.5 rounded-lg bg-[#07090e] border border-[#1b222d] space-y-1.5">
-                    <div className="text-[10px] uppercase font-bold text-cyan-400 flex items-center gap-1.5">
-                      <Shield className="w-3.5 h-3.5" />
-                      <span>Domain Isolation Invariant</span>
-                    </div>
-                    <p className="text-[11px] text-slate-300">
-                      CRM Wallets (PostgreSQL single source of truth) and Trading Account balances (external trade server equity) are separate financial realms. Trading equity must never be silently co-mingled with wallet deposits.
-                    </p>
-                  </div>
-
-                  <div className="p-3.5 rounded-lg bg-[#07090e] border border-[#1b222d] space-y-1.5">
-                    <div className="text-[10px] uppercase font-bold text-amber-400 flex items-center gap-1.5">
-                      <Clock className="w-3.5 h-3.5" />
-                      <span>Two-Phase Commit Required</span>
-                    </div>
-                    <p className="text-[11px] text-slate-300">
-                      Requires an atomic two-phase transfer ledger table: Phase 1 reserves wallet funds via existing reservation mechanism; Phase 2 invokes the Trade Server Gateway API (Manager API); Phase 3 clears or reverses the reservation upon trade server confirmation.
-                    </p>
-                  </div>
-
-                  <div className="p-3.5 rounded-lg bg-[#07090e] border border-[#1b222d] space-y-1.5">
-                    <div className="text-[10px] uppercase font-bold text-purple-400 flex items-center gap-1.5">
-                      <Layers className="w-3.5 h-3.5" />
-                      <span>Missing Trade Server Gateway</span>
-                    </div>
-                    <p className="text-[11px] text-slate-300">
-                      Automated execution is halted until MT4/MT5 Server Gateway Manager credentials and dedicated transfer schema (<code className="text-purple-300">internal_transfers</code>) are provisioned in the backend.
-                    </p>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] text-slate-400">
+                      Pending Approval: <strong className="text-cyan-400 font-mono">{pendingTransfersCount}</strong>
+                    </span>
                   </div>
                 </div>
+
+                {filteredTransfers.length === 0 ? (
+                  <div className="p-10 text-center text-slate-500 text-xs">
+                    No internal account transfers matching the active filter criteria.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="border-b border-[#30363d] text-slate-400 uppercase tracking-wider text-[10px]">
+                          <th className="py-2.5 px-3">Ref No</th>
+                          <th className="py-2.5 px-3">Client User</th>
+                          <th className="py-2.5 px-3">Direction</th>
+                          <th className="py-2.5 px-3">Target Trading Account</th>
+                          <th className="py-2.5 px-3 font-mono">Amount</th>
+                          <th className="py-2.5 px-3">Status</th>
+                          <th className="py-2.5 px-3">Requested At</th>
+                          <th className="py-2.5 px-3">Notes / Reason</th>
+                          <th className="py-2.5 px-3 text-right">Desk Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#21262d]">
+                        {filteredTransfers.map((trf) => (
+                          <tr key={trf.id} className="hover:bg-[#21262d]/50 transition text-[11px]">
+                            <td className="py-2.5 px-3 font-mono font-semibold text-cyan-300">
+                              {trf.reference_no}
+                            </td>
+                            <td className="py-2.5 px-3">
+                              <button
+                                onClick={() => setInspectClientId(trf.user_id)}
+                                className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 border border-purple-500/20 text-[11px] font-mono transition group"
+                                title="Inspect Client 360°"
+                              >
+                                <span className="truncate max-w-[120px]">
+                                  {trf.user_name || trf.user_email || trf.user_id}
+                                </span>
+                                <Eye className="w-3 h-3 text-purple-400 group-hover:text-purple-200" />
+                              </button>
+                            </td>
+                            <td className="py-2.5 px-3">
+                              {trf.direction === 'wallet_to_trading' ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 text-[10px] font-semibold">
+                                  <Wallet className="w-3 h-3" /> Wallet → Trading
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-[10px] font-semibold">
+                                  <ArrowDownLeft className="w-3 h-3" /> Trading → Wallet
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 font-mono text-slate-200">
+                              <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300 font-semibold mr-1">
+                                {trf.platform?.toUpperCase() || 'MT'}
+                              </span>
+                              #{trf.account_number || 'N/A'}
+                            </td>
+                            <td className="py-2.5 px-3 font-mono font-bold text-white">
+                              ${trf.amount} {trf.currency}
+                            </td>
+                            <td className="py-2.5 px-3">
+                              {trf.status === 'pending' && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[10px] font-semibold">
+                                  <Clock className="w-3 h-3" /> Pending Review
+                                </span>
+                              )}
+                              {trf.status === 'approved' && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-semibold">
+                                  <Check className="w-3 h-3" /> Executed
+                                </span>
+                              )}
+                              {trf.status === 'rejected' && (
+                                <span
+                                  title={trf.rejection_reason || 'Rejected by finance'}
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/20 text-[10px] font-semibold cursor-help"
+                                >
+                                  <X className="w-3 h-3" /> Rejected
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 text-slate-400 font-mono text-[10px]">
+                              {new Date(trf.created_at).toLocaleString()}
+                            </td>
+                            <td className="py-2.5 px-3 text-slate-400 max-w-xs truncate">
+                              {trf.status === 'rejected' && trf.rejection_reason ? (
+                                <span className="text-rose-300 font-medium">{trf.rejection_reason}</span>
+                              ) : trf.admin_notes ? (
+                                <span className="text-slate-300">{trf.admin_notes}</span>
+                              ) : trf.client_notes ? (
+                                <span className="text-slate-400">{trf.client_notes}</span>
+                              ) : (
+                                '—'
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 text-right">
+                              {trf.status === 'pending' ? (
+                                <div className="flex items-center justify-end gap-2">
+                                  <button
+                                    onClick={() =>
+                                      setActionItem({
+                                        type: 'approve_transfer',
+                                        id: trf.id,
+                                        reference: trf.reference_no,
+                                        amount: trf.amount,
+                                        direction: trf.direction,
+                                      })
+                                    }
+                                    className="px-2 py-1 rounded bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/20 text-[11px] font-semibold transition"
+                                  >
+                                    Approve & Execute
+                                  </button>
+                                  <button
+                                    onClick={() =>
+                                      setActionItem({
+                                        type: 'reject_transfer',
+                                        id: trf.id,
+                                        reference: trf.reference_no,
+                                        amount: trf.amount,
+                                        direction: trf.direction,
+                                      })
+                                    }
+                                    className="px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 text-[11px] font-semibold transition"
+                                  >
+                                    Reject
+                                  </button>
+                                </div>
+                              ) : (
+                                <span className="text-[11px] text-slate-500">Settled</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
 
               {/* Historical Transfers Records in Ledger */}
@@ -861,7 +1039,7 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
                     Internal Transfer Audit Records ({transferTransactions.length})
                   </h4>
                   <span className="text-[11px] text-slate-500 font-mono">
-                    Filtered by type: internal_transfer
+                    Filtered by transfer ledger events
                   </span>
                 </div>
 
@@ -1154,6 +1332,8 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
                   {actionItem.type === 'reject_deposit' && 'Reject Deposit Request'}
                   {actionItem.type === 'approve_withdrawal' && 'Confirm Payout Dispatch'}
                   {actionItem.type === 'reject_withdrawal' && 'Reject & Release Reserved Funds'}
+                  {actionItem.type === 'approve_transfer' && 'Approve & Execute Internal Transfer'}
+                  {actionItem.type === 'reject_transfer' && 'Reject Internal Transfer Request'}
                 </span>
               </h3>
               <button
@@ -1173,6 +1353,14 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
                 <span className="text-slate-400">Amount:</span>
                 <span className="font-mono text-emerald-400 font-bold">${actionItem.amount} USD</span>
               </div>
+              {actionItem.direction && (
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Transfer Direction:</span>
+                  <span className="text-cyan-300 font-semibold">
+                    {actionItem.direction === 'wallet_to_trading' ? 'Wallet → Trading Account' : 'Trading Account → Wallet'}
+                  </span>
+                </div>
+              )}
             </div>
 
             <form onSubmit={handleExecuteReviewAction} className="space-y-4 text-xs">

@@ -33,7 +33,11 @@ async function startServer() {
         if (!res.getHeader('Content-Type')) {
           res.setHeader('Content-Type', 'application/json; charset=utf-8');
         }
-        res.status(response.statusCode || 200).send(response.body);
+        if (response.isBase64Encoded && response.body) {
+          res.status(response.statusCode || 200).send(Buffer.from(response.body, 'base64'));
+        } else {
+          res.status(response.statusCode || 200).send(response.body);
+        }
       } else {
         res.status(500).setHeader('Content-Type', 'application/json').json({ status: 'error', message: 'Invalid response from function' });
       }

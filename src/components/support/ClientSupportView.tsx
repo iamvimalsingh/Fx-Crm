@@ -80,7 +80,7 @@ export function ClientSupportView({ initialTicketId }: ClientSupportViewProps) {
 
   // New ticket form
   const [newSubject, setNewSubject] = useState('');
-  const [newCategory, setNewCategory] = useState('account');
+  const [newCategory, setNewCategory] = useState('general');
   const [newPriority, setNewPriority] = useState<'low' | 'medium' | 'high' | 'urgent'>('medium');
   const [newMessage, setNewMessage] = useState('');
   const [attachments, setAttachments] = useState<
@@ -152,12 +152,22 @@ export function ClientSupportView({ initialTicketId }: ClientSupportViewProps) {
       return;
     }
 
+    let mimeType = file.type;
+    if (!mimeType || mimeType === 'application/octet-stream') {
+      const ext = file.name.split('.').pop()?.toLowerCase();
+      if (ext === 'jpg' || ext === 'jpeg') mimeType = 'image/jpeg';
+      else if (ext === 'png') mimeType = 'image/png';
+      else if (ext === 'webp') mimeType = 'image/webp';
+      else if (ext === 'pdf') mimeType = 'application/pdf';
+      else mimeType = 'application/pdf';
+    }
+
     const reader = new FileReader();
     reader.onload = () => {
       const base64Data = (reader.result as string).split(',')[1];
       const attachmentObj = {
         original_filename: file.name,
-        mime_type: file.type || 'application/octet-stream',
+        mime_type: mimeType,
         file_size: file.size,
         file_base64: base64Data,
       };
@@ -197,7 +207,8 @@ export function ClientSupportView({ initialTicketId }: ClientSupportViewProps) {
 
       const json = await res.json();
       if (res.ok && json.status === 'success') {
-        setMessage({ type: 'success', text: `Ticket #${json.data.ticket_number} created successfully.` });
+        const ticketNum = json.data?.ticket_no || json.data?.ticket_number || json.data?.id;
+        setMessage({ type: 'success', text: `Ticket #${ticketNum} created successfully.` });
         setNewSubject('');
         setNewMessage('');
         setAttachments([]);
@@ -429,13 +440,11 @@ export function ClientSupportView({ initialTicketId }: ClientSupportViewProps) {
                   onChange={(e) => setNewCategory(e.target.value)}
                   className="w-full bg-[#182030] border border-[#26334d] rounded-lg px-3 py-2 text-white"
                 >
-                  <option value="account">Account Registration & Settings</option>
-                  <option value="deposit">Deposit & Funding</option>
-                  <option value="withdrawal">Withdrawal & Payouts</option>
+                  <option value="general">Account & General Inquiries</option>
+                  <option value="deposit_withdrawal">Deposit & Withdrawal</option>
                   <option value="trading">Trading Execution & Spreads</option>
-                  <option value="kyc">KYC & Document Verification</option>
+                  <option value="verification_kyc">KYC & Document Verification</option>
                   <option value="technical">Platform & Technical Support</option>
-                  <option value="other">General Inquiries</option>
                 </select>
               </div>
 
@@ -489,7 +498,7 @@ export function ClientSupportView({ initialTicketId }: ClientSupportViewProps) {
                     type="file"
                     className="hidden"
                     onChange={(e) => handleFileUpload(e, false)}
-                    accept="image/*,application/pdf,text/plain"
+                    accept="image/png,image/jpeg,image/webp,application/pdf"
                   />
                 </label>
               </div>
@@ -698,19 +707,22 @@ export function ClientSupportView({ initialTicketId }: ClientSupportViewProps) {
                   {/* Attachments if any */}
                   {msg.attachments && msg.attachments.length > 0 && (
                     <div className="pt-2 border-t border-[#26334d]/60 flex flex-wrap gap-2">
-                      {msg.attachments.map((att) => (
-                        <button
-                          key={att.id}
-                          onClick={() => handlePreviewAttachment(att.storage_key, att.mime_type, att.original_filename)}
-                          className="px-2.5 py-1 rounded bg-[#0b0e14] hover:bg-[#222c42] border border-[#26334d] text-blue-400 flex items-center gap-1.5 text-[11px] transition"
-                        >
-                          <Paperclip className="w-3 h-3" />
-                          <span>{att.original_filename}</span>
-                          <span className="text-slate-500 text-[10px]">
-                            ({(att.file_size / 1024).toFixed(0)} KB)
-                          </span>
-                        </button>
-                      ))}
+                      {msg.attachments.map((att) => {
+                        const storageKey = att.storage_key || (att as any).object_key;
+                        return (
+                          <button
+                            key={att.id}
+                            onClick={() => handlePreviewAttachment(storageKey, att.mime_type, att.original_filename)}
+                            className="px-2.5 py-1 rounded bg-[#0b0e14] hover:bg-[#222c42] border border-[#26334d] text-blue-400 flex items-center gap-1.5 text-[11px] transition"
+                          >
+                            <Paperclip className="w-3 h-3" />
+                            <span>{att.original_filename}</span>
+                            <span className="text-slate-500 text-[10px]">
+                              ({(att.file_size / 1024).toFixed(0)} KB)
+                            </span>
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -747,7 +759,7 @@ export function ClientSupportView({ initialTicketId }: ClientSupportViewProps) {
                       type="file"
                       className="hidden"
                       onChange={(e) => handleFileUpload(e, true)}
-                      accept="image/*,application/pdf,text/plain"
+                      accept="image/png,image/jpeg,image/webp,application/pdf"
                     />
                   </label>
 

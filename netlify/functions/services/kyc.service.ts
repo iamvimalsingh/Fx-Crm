@@ -20,7 +20,7 @@ export interface KycProfileWithDetails extends KycProfileRecord {
     email: string;
     country: string;
   };
-  documents?: (KycDocumentRecord & { download_url?: string })[];
+  documents?: (KycDocumentRecord & { download_url?: string; storage_key?: string })[];
 }
 
 export class KycService {
@@ -74,21 +74,48 @@ export class KycService {
         `SELECT * FROM kyc_profiles WHERE user_id = $1 LIMIT 1`,
         [userId]
       );
-      if (profiles.length === 0) return null;
-
-      const profile = profiles[0];
       const documents = await query<KycDocumentRecord>(
         `SELECT * FROM kyc_documents WHERE user_id = $1 ORDER BY created_at DESC`,
         [userId]
       );
-
       // Generate secure download URLs for attached documents
       const docsWithUrls = await Promise.all(
         documents.map(async (doc) => ({
           ...doc,
+          storage_key: doc.object_key,
           download_url: await StorageService.getDownloadUrl(doc.object_key),
         }))
       );
+
+      if (profiles.length === 0) {
+        if (documents.length === 0) return null;
+        return {
+          id: '',
+          user_id: userId,
+          first_name: '',
+          last_name: '',
+          date_of_birth: '',
+          nationality: '',
+          country_of_residence: '',
+          address_line1: '',
+          city: '',
+          postal_code: '',
+          id_document_type: 'passport',
+          id_document_number: '',
+          id_expiry_date: null,
+          status: 'pending',
+          rejection_reason: null,
+          admin_notes: null,
+          submitted_at: null,
+          reviewed_at: null,
+          reviewed_by: null,
+          created_at: new Date(),
+          updated_at: new Date(),
+          documents: docsWithUrls,
+        } as any;
+      }
+
+      const profile = profiles[0];
 
       return {
         ...profile,
@@ -105,7 +132,6 @@ export class KycService {
           }
         }
       }
-      if (!profile) return null;
 
       const documents = Array.from(inMemoryDb.kycDocuments.values())
         .filter((d) => d.user_id === userId)
@@ -114,9 +140,38 @@ export class KycService {
       const docsWithUrls = await Promise.all(
         documents.map(async (doc) => ({
           ...doc,
+          storage_key: doc.object_key,
           download_url: await StorageService.getDownloadUrl(doc.object_key),
         }))
       );
+
+      if (!profile) {
+        if (documents.length === 0) return null;
+        return {
+          id: '',
+          user_id: userId,
+          first_name: '',
+          last_name: '',
+          date_of_birth: '',
+          nationality: '',
+          country_of_residence: '',
+          address_line1: '',
+          city: '',
+          postal_code: '',
+          id_document_type: 'passport',
+          id_document_number: '',
+          id_expiry_date: null,
+          status: 'pending',
+          rejection_reason: null,
+          admin_notes: null,
+          submitted_at: null,
+          reviewed_at: null,
+          reviewed_by: null,
+          created_at: new Date(),
+          updated_at: new Date(),
+          documents: docsWithUrls,
+        } as any;
+      }
 
       return {
         ...profile,
@@ -152,6 +207,7 @@ export class KycService {
       const docsWithUrls = await Promise.all(
         documents.map(async (doc) => ({
           ...doc,
+          storage_key: doc.object_key,
           download_url: await StorageService.getDownloadUrl(doc.object_key),
         }))
       );
@@ -180,6 +236,7 @@ export class KycService {
       const docsWithUrls = await Promise.all(
         documents.map(async (doc) => ({
           ...doc,
+          storage_key: doc.object_key,
           download_url: await StorageService.getDownloadUrl(doc.object_key),
         }))
       );
@@ -379,7 +436,7 @@ export class KycService {
     fileBuffer: Buffer,
     ip?: string,
     userAgent?: string
-  ): Promise<KycDocumentRecord & { download_url: string }> {
+  ): Promise<KycDocumentRecord & { download_url: string; storage_key?: string }> {
     // 1. Upload file to persistent object storage
     const storageResult = await StorageService.uploadDocument(
       userId,
@@ -445,6 +502,7 @@ export class KycService {
       );
       return {
         ...rows[0],
+        storage_key: record.object_key,
         download_url: storageResult.url,
       };
     } else {
@@ -464,6 +522,7 @@ export class KycService {
       );
       return {
         ...record,
+        storage_key: record.object_key,
         download_url: storageResult.url,
       };
     }

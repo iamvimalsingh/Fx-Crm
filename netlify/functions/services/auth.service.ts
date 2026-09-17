@@ -5,6 +5,7 @@ import { generateToken } from '../middleware/auth';
 import { RegisterInput, LoginInput, ForgotPasswordInput, ResetPasswordInput } from '../middleware/validation';
 import { MailService } from './mail.service';
 import { NotificationService } from './notification.service';
+import { TradingAccountService } from './trading-account.service';
 
 export class AuthService {
   /**
@@ -124,6 +125,20 @@ export class AuthService {
       };
       inMemoryDb.wallets.set(userWallet.id, userWallet);
       inMemoryDb.wallets.set(`${userWallet.user_id}_${userWallet.currency}`, userWallet);
+    }
+
+    // Automatically provision one default demo trading account for every newly registered client
+    if (newUser.role === 'client') {
+      try {
+        await TradingAccountService.provisionDefaultDemoAccount(
+          newUser.id,
+          newUser.preferred_currency || 'USD',
+          ip,
+          userAgent
+        );
+      } catch (demoErr) {
+        console.error('Failed to auto-provision default demo account during client registration:', demoErr);
+      }
     }
 
     const token = generateToken(newUser);
@@ -856,11 +871,11 @@ export class AuthService {
         reserved_balance: '0.00',
       };
 
-      const tradingAccounts = await query<any>(
-        `SELECT id, account_number, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, group_tier, created_at
-         FROM trading_accounts WHERE user_id = $1 ORDER BY created_at DESC`,
+      const tradingAccountRows = await query<any>(
+        `SELECT * FROM trading_accounts WHERE user_id = $1 ORDER BY created_at DESC`,
         [clientId]
       );
+      const tradingAccounts = tradingAccountRows.map((r) => TradingAccountService.hydrateAccountRecord(r));
 
       const kycProfileRows = await query<any>(
         `SELECT * FROM kyc_profiles WHERE user_id = $1`,
@@ -925,6 +940,7 @@ export class AuthService {
 
       const tradingAccounts = Array.from(inMemoryDb.tradingAccounts.values())
         .filter((ta) => ta.user_id === clientId)
+        .map((ta) => TradingAccountService.hydrateAccountRecord(ta))
         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
       const kycProfile = Array.from(inMemoryDb.kycProfiles.values()).find((kp) => kp.user_id === clientId) || null;
@@ -1037,6 +1053,372 @@ export class AuthService {
     );
 
     return { success: true, clientId, status, previousStatus };
+  }
+
+  /**
+   * Admin-only client deletion / deactivation with comprehensive foreign-key inspection and financial retention.
+   *
+   * Pre-flight checks:
+   * 1. Authorization: caller must be admin, cannot delete own account.
+   * 2. Target must exist and must be a client (cannot delete staff admins).
+   * 3. Balance verification: client must NOT have active wallet balance > 0 or reserved_balance > 0.
+   * 4. Pending financial requests: must NOT have pending deposits, withdrawals, or account transfers.
+   * 5. Financial & audit retention decision:
+   *    - If client has ANY immutable ledger transactions, completed deposits/withdrawals, or transfers:
+   *      HARD deletion would destroy required financial ledger history. Instead, the safest account
+   *      deactivation lifecycle is applied: status set to 'suspended', all trading accounts archived,
+   *      and CLIENT_DEACTIVATED_RETAINED_FOR_AUDIT recorded.
+   *    - If client has ZERO financial history (fresh account / non-transacting):
+   *      Controlled transactional deletion order is executed, leaving NO orphan records:
+   *      notifications -> support_ticket_attachments -> support_ticket_messages -> support_tickets ->
+   *      kyc_documents -> kyc_profiles -> trading_password_resets -> trading_accounts ->
+   *      wallets -> password_resets -> audit_logs (actor_id nullified) -> users.
+   *      CLIENT_DELETED is recorded in audit logs.
+   */
+  public static async deleteClient(
+    adminUserId: string,
+    clientId: string,
+    options?: { confirmEmail?: string },
+    ip?: string,
+    userAgent?: string
+  ): Promise<{ success: boolean; action: 'deleted' | 'deactivated'; message: string; client_id: string }> {
+    if (adminUserId === clientId) {
+      const err: any = new Error('Administrators cannot delete their own profile');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const pool = getPool();
+    if (pool) {
+      // 1. Fetch user
+      const userRows = await query<any>(
+        `SELECT id, email, first_name, last_name, role, status FROM users WHERE id = $1`,
+        [clientId]
+      );
+      if (userRows.length === 0) {
+        const err: any = new Error('Client account not found');
+        err.statusCode = 404;
+        throw err;
+      }
+      const targetUser = userRows[0];
+      if (targetUser.role === 'admin') {
+        const err: any = new Error('Cannot delete administrator accounts via client deletion workflow');
+        err.statusCode = 403;
+        throw err;
+      }
+
+      // Check confirm email if provided
+      if (options?.confirmEmail && options.confirmEmail.trim().toLowerCase() !== targetUser.email.toLowerCase()) {
+        const err: any = new Error('Email confirmation does not match the client email address');
+        err.statusCode = 400;
+        throw err;
+      }
+
+      // 2. Check wallet balance
+      const walletRows = await query<any>(
+        `SELECT balance, reserved_balance FROM wallets WHERE user_id = $1`,
+        [clientId]
+      );
+      for (const w of walletRows) {
+        const bal = parseFloat(w.balance || '0');
+        const resBal = parseFloat(w.reserved_balance || '0');
+        if (bal > 0 || resBal > 0) {
+          const err: any = new Error(`Cannot delete client with active wallet balance (${w.balance}). Balance must be settled or withdrawn first.`);
+          err.statusCode = 400;
+          throw err;
+        }
+      }
+
+      // 3. Check pending financial requests
+      const pendingDeposits = await query<any>(
+        `SELECT id FROM deposits WHERE user_id = $1 AND status = 'pending'`,
+        [clientId]
+      );
+      if (pendingDeposits.length > 0) {
+        const err: any = new Error('Cannot delete client with pending deposits. Please approve or reject pending deposits first.');
+        err.statusCode = 400;
+        throw err;
+      }
+
+      const pendingWithdrawals = await query<any>(
+        `SELECT id FROM withdrawals WHERE user_id = $1 AND status = 'pending'`,
+        [clientId]
+      );
+      if (pendingWithdrawals.length > 0) {
+        const err: any = new Error('Cannot delete client with pending withdrawals. Please approve or reject pending withdrawals first.');
+        err.statusCode = 400;
+        throw err;
+      }
+
+      const pendingTransfers = await query<any>(
+        `SELECT id FROM account_transfers WHERE user_id = $1 AND status = 'pending'`,
+        [clientId]
+      );
+      if (pendingTransfers.length > 0) {
+        const err: any = new Error('Cannot delete client with pending account transfers. Please resolve transfers first.');
+        err.statusCode = 400;
+        throw err;
+      }
+
+      // 4. Check for immutable financial ledger history
+      const txRows = await query<any>(
+        `SELECT COUNT(*) as count FROM transactions WHERE user_id = $1`,
+        [clientId]
+      );
+      const txCount = parseInt(txRows[0]?.count || '0', 10);
+
+      const depRows = await query<any>(
+        `SELECT COUNT(*) as count FROM deposits WHERE user_id = $1`,
+        [clientId]
+      );
+      const depCount = parseInt(depRows[0]?.count || '0', 10);
+
+      const wthRows = await query<any>(
+        `SELECT COUNT(*) as count FROM withdrawals WHERE user_id = $1`,
+        [clientId]
+      );
+      const wthCount = parseInt(wthRows[0]?.count || '0', 10);
+
+      const trRows = await query<any>(
+        `SELECT COUNT(*) as count FROM account_transfers WHERE user_id = $1`,
+        [clientId]
+      );
+      const trCount = parseInt(trRows[0]?.count || '0', 10);
+
+      const hasFinancialHistory = txCount > 0 || depCount > 0 || wthCount > 0 || trCount > 0;
+
+      if (hasFinancialHistory) {
+        // Safe deactivation lifecycle: retain ledger and audit history for regulatory compliance
+        await query(
+          `UPDATE users SET status = 'suspended', updated_at = NOW() WHERE id = $1`,
+          [clientId]
+        );
+        await query(
+          `UPDATE trading_accounts SET status = 'archived', updated_at = NOW() WHERE user_id = $1`,
+          [clientId]
+        );
+
+        await this.recordAuditLog(
+          adminUserId,
+          'CLIENT_DEACTIVATED_RETAINED_FOR_AUDIT',
+          'user',
+          clientId,
+          {
+            target_client_id: clientId,
+            target_email: targetUser.email,
+            transactions_retained: txCount,
+            deposits_retained: depCount,
+            withdrawals_retained: wthCount,
+            transfers_retained: trCount,
+            reason: 'Client deletion requested; deactivated and archived to preserve immutable financial and audit history.',
+          },
+          ip,
+          userAgent
+        );
+
+        return {
+          success: true,
+          action: 'deactivated',
+          message: 'Client profile has been deactivated and trading accounts archived. Financial ledger and audit history have been retained for regulatory compliance.',
+          client_id: clientId,
+        };
+      } else {
+        // Controlled deletion order leaving zero orphan records
+        await query(`DELETE FROM notifications WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM support_ticket_attachments WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM support_ticket_messages WHERE sender_id = $1`, [clientId]);
+        await query(`DELETE FROM support_tickets WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM kyc_documents WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM kyc_profiles WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM trading_password_resets WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM trading_accounts WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM account_transfers WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM deposits WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM withdrawals WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM transactions WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM wallets WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM password_resets WHERE email = $1`, [targetUser.email]);
+        await query(`UPDATE audit_logs SET actor_id = NULL WHERE actor_id = $1`, [clientId]);
+        await query(`DELETE FROM users WHERE id = $1`, [clientId]);
+
+        await this.recordAuditLog(
+          adminUserId,
+          'CLIENT_DELETED',
+          'user',
+          clientId,
+          {
+            deleted_client_id: clientId,
+            deleted_client_email: targetUser.email,
+            reason: 'Client deleted with no prior financial history.',
+          },
+          ip,
+          userAgent
+        );
+
+        return {
+          success: true,
+          action: 'deleted',
+          message: 'Client profile and associated records deleted successfully.',
+          client_id: clientId,
+        };
+      }
+    } else {
+      // In-Memory implementation
+      const targetUser = Array.from(inMemoryDb.users.values()).find((u) => u.id === clientId);
+      if (!targetUser) {
+        const err: any = new Error('Client account not found');
+        err.statusCode = 404;
+        throw err;
+      }
+      if (targetUser.role === 'admin') {
+        const err: any = new Error('Cannot delete administrator accounts via client deletion workflow');
+        err.statusCode = 403;
+        throw err;
+      }
+
+      if (options?.confirmEmail && options.confirmEmail.trim().toLowerCase() !== targetUser.email.toLowerCase()) {
+        const err: any = new Error('Email confirmation does not match the client email address');
+        err.statusCode = 400;
+        throw err;
+      }
+
+      const clientWallets = Array.from(inMemoryDb.wallets.values()).filter((w) => w.user_id === clientId);
+      for (const w of clientWallets) {
+        const bal = parseFloat(w.balance || '0');
+        const resBal = parseFloat(w.reserved_balance || '0');
+        if (bal > 0 || resBal > 0) {
+          const err: any = new Error(`Cannot delete client with active wallet balance (${w.balance}). Balance must be settled or withdrawn first.`);
+          err.statusCode = 400;
+          throw err;
+        }
+      }
+
+      const pendingDeposits = Array.from(inMemoryDb.deposits.values()).filter((d) => d.user_id === clientId && d.status === 'pending');
+      if (pendingDeposits.length > 0) {
+        const err: any = new Error('Cannot delete client with pending deposits. Please approve or reject pending deposits first.');
+        err.statusCode = 400;
+        throw err;
+      }
+
+      const pendingWithdrawals = Array.from(inMemoryDb.withdrawals.values()).filter((w) => w.user_id === clientId && w.status === 'pending');
+      if (pendingWithdrawals.length > 0) {
+        const err: any = new Error('Cannot delete client with pending withdrawals. Please approve or reject pending withdrawals first.');
+        err.statusCode = 400;
+        throw err;
+      }
+
+      const pendingTransfers = Array.from(inMemoryDb.accountTransfers.values()).filter((tr) => tr.user_id === clientId && tr.status === 'pending');
+      if (pendingTransfers.length > 0) {
+        const err: any = new Error('Cannot delete client with pending account transfers. Please resolve transfers first.');
+        err.statusCode = 400;
+        throw err;
+      }
+
+      const txCount = inMemoryDb.transactions.filter((t) => t.user_id === clientId).length;
+      const depCount = Array.from(inMemoryDb.deposits.values()).filter((d) => d.user_id === clientId).length;
+      const wthCount = Array.from(inMemoryDb.withdrawals.values()).filter((w) => w.user_id === clientId).length;
+      const trCount = Array.from(inMemoryDb.accountTransfers.values()).filter((tr) => tr.user_id === clientId).length;
+
+      const hasFinancialHistory = txCount > 0 || depCount > 0 || wthCount > 0 || trCount > 0;
+
+      if (hasFinancialHistory) {
+        targetUser.status = 'suspended';
+        targetUser.updated_at = new Date();
+
+        for (const [id, acc] of inMemoryDb.tradingAccounts.entries()) {
+          if (acc.user_id === clientId) {
+            acc.status = 'archived';
+            acc.updated_at = new Date();
+          }
+        }
+
+        await this.recordAuditLog(
+          adminUserId,
+          'CLIENT_DEACTIVATED_RETAINED_FOR_AUDIT',
+          'user',
+          clientId,
+          {
+            target_client_id: clientId,
+            target_email: targetUser.email,
+            transactions_retained: txCount,
+            deposits_retained: depCount,
+            withdrawals_retained: wthCount,
+            transfers_retained: trCount,
+            reason: 'Client deletion requested; deactivated and archived to preserve immutable financial and audit history.',
+          },
+          ip,
+          userAgent
+        );
+
+        return {
+          success: true,
+          action: 'deactivated',
+          message: 'Client profile has been deactivated and trading accounts archived. Financial ledger and audit history have been retained for regulatory compliance.',
+          client_id: clientId,
+        };
+      } else {
+        inMemoryDb.notifications = inMemoryDb.notifications.filter((n) => n.user_id !== clientId);
+        inMemoryDb.supportAttachments = inMemoryDb.supportAttachments.filter((a) => a.user_id !== clientId);
+        inMemoryDb.supportMessages = inMemoryDb.supportMessages.filter((m) => m.sender_id !== clientId);
+        for (const [id, t] of inMemoryDb.supportTickets.entries()) {
+          if (t.user_id === clientId) inMemoryDb.supportTickets.delete(id);
+        }
+        for (const [id, d] of inMemoryDb.kycDocuments.entries()) {
+          if (d.user_id === clientId) inMemoryDb.kycDocuments.delete(id);
+        }
+        for (const [id, p] of inMemoryDb.kycProfiles.entries()) {
+          if (p.user_id === clientId) inMemoryDb.kycProfiles.delete(id);
+        }
+        for (const [id, r] of inMemoryDb.tradingPasswordResets.entries()) {
+          if (r.user_id === clientId) inMemoryDb.tradingPasswordResets.delete(id);
+        }
+        for (const [id, acc] of inMemoryDb.tradingAccounts.entries()) {
+          if (acc.user_id === clientId) inMemoryDb.tradingAccounts.delete(id);
+        }
+        for (const [id, tr] of inMemoryDb.accountTransfers.entries()) {
+          if (tr.user_id === clientId) inMemoryDb.accountTransfers.delete(id);
+        }
+        for (const [id, d] of inMemoryDb.deposits.entries()) {
+          if (d.user_id === clientId) inMemoryDb.deposits.delete(id);
+        }
+        for (const [id, w] of inMemoryDb.withdrawals.entries()) {
+          if (w.user_id === clientId) inMemoryDb.withdrawals.delete(id);
+        }
+        inMemoryDb.transactions = inMemoryDb.transactions.filter((t) => t.user_id !== clientId);
+        for (const [k, w] of inMemoryDb.wallets.entries()) {
+          if (w.user_id === clientId) inMemoryDb.wallets.delete(k);
+        }
+        for (const [tok, pr] of inMemoryDb.passwordResets.entries()) {
+          if (pr.email === targetUser.email) inMemoryDb.passwordResets.delete(tok);
+        }
+        for (const al of inMemoryDb.auditLogs) {
+          if (al.actor_id === clientId) al.actor_id = null;
+        }
+        inMemoryDb.users.delete(targetUser.email.toLowerCase());
+        inMemoryDb.users.delete(clientId);
+
+        await this.recordAuditLog(
+          adminUserId,
+          'CLIENT_DELETED',
+          'user',
+          clientId,
+          {
+            deleted_client_id: clientId,
+            deleted_client_email: targetUser.email,
+            reason: 'Client deleted with no prior financial history.',
+          },
+          ip,
+          userAgent
+        );
+
+        return {
+          success: true,
+          action: 'deleted',
+          message: 'Client profile and associated records deleted successfully.',
+          client_id: clientId,
+        };
+      }
+    }
   }
 
   /**

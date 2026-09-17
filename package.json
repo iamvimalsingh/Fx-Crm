@@ -8,7 +8,7 @@
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs && esbuild src/vercel-handler.ts --bundle --platform=node --target=node20 --format=esm --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --outfile=api/index.js --external:pg-native",
     "start": "node dist/server.cjs",
     "preview": "vite preview",
-    "test": "tsx test-auth.ts && tsx test-financial.ts && tsx test-trading-accounts.ts && tsx test-production-audit.ts && tsx test-crm-modules.ts && tsx test-security-hardening.ts",
+    "test": "tsx test-auth.ts && tsx test-financial.ts && tsx test-trading-accounts.ts && tsx test-production-audit.ts && tsx test-crm-modules.ts && tsx test-security-hardening.ts && tsx test-internal-transfers.ts && tsx test-prompt-5003b.ts",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"
   },

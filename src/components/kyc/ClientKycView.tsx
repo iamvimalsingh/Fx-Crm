@@ -194,10 +194,20 @@ export function ClientKycView() {
       reader.readAsDataURL(selectedFile);
       const base64Data = await base64Promise;
 
+      let mimeType = selectedFile.type;
+      if (!mimeType || mimeType === 'application/octet-stream') {
+        const ext = selectedFile.name.split('.').pop()?.toLowerCase();
+        if (ext === 'jpg' || ext === 'jpeg') mimeType = 'image/jpeg';
+        else if (ext === 'png') mimeType = 'image/png';
+        else if (ext === 'webp') mimeType = 'image/webp';
+        else if (ext === 'pdf') mimeType = 'application/pdf';
+        else mimeType = 'application/pdf';
+      }
+
       const payload = {
         document_type: uploadDocType,
         original_filename: selectedFile.name,
-        mime_type: selectedFile.type || 'application/octet-stream',
+        mime_type: mimeType,
         file_size: selectedFile.size,
         file_base64: base64Data,
       };
@@ -249,8 +259,13 @@ export function ClientKycView() {
 
   const handlePreviewDocument = async (doc: KycDocument) => {
     if (!token) return;
+    const key = doc.storage_key || (doc as any).object_key;
+    if (!key) {
+      setMessage({ type: 'error', text: 'Document storage key not available for preview.' });
+      return;
+    }
     try {
-      const res = await fetch(`/api/documents/preview?key=${encodeURIComponent(doc.storage_key)}`, {
+      const res = await fetch(`/api/documents/preview?key=${encodeURIComponent(key)}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {

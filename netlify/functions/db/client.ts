@@ -139,7 +139,7 @@ export interface TradingAccountRecord {
   id: string;
   account_number: string;
   user_id: string;
-  platform: 'MT4' | 'MT5' | 'cTrader' | 'WebTrader';
+  platform: string;
   account_type: 'standard' | 'raw_spread' | 'pro' | 'islamic';
   server_name: string;
   currency: string;
@@ -155,6 +155,9 @@ export interface TradingAccountRecord {
   approved_by?: string | null;
   created_at: Date;
   updated_at: Date;
+  password?: string | null;
+  balance?: string | null;
+  terminal_url?: string | null;
 }
 
 export interface KycProfileRecord {
@@ -247,6 +250,41 @@ export interface NotificationRecord {
   created_at: Date;
 }
 
+export interface AccountTransferRecord {
+  id: string;
+  reference_no: string;
+  user_id: string;
+  wallet_id: string;
+  trading_account_id: string;
+  direction: 'wallet_to_trading' | 'trading_to_wallet';
+  amount: string; // Exact decimal string
+  currency: string;
+  status: 'pending' | 'approved' | 'rejected';
+  client_notes?: string | null;
+  admin_notes?: string | null;
+  approved_by?: string | null;
+  approved_at?: Date | null;
+  rejected_by?: string | null;
+  rejected_at?: Date | null;
+  rejection_reason?: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface TradingPasswordResetRecord {
+  id: string;
+  trading_account_id: string;
+  user_id: string;
+  account_number: string;
+  status: 'pending' | 'approved' | 'rejected';
+  reason?: string | null;
+  admin_notes?: string | null;
+  processed_by?: string | null;
+  processed_at?: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
 import {
   DatabaseGuard,
   DatabaseConfigurationError,
@@ -281,6 +319,8 @@ class InMemoryDb {
   public supportMessages: SupportTicketMessageRecord[] = [];
   public supportAttachments: SupportTicketAttachmentRecord[] = [];
   public notifications: NotificationRecord[] = [];
+  public accountTransfers: Map<string, AccountTransferRecord> = new Map();
+  public tradingPasswordResets: Map<string, TradingPasswordResetRecord> = new Map();
   public systemSettings: Map<string, any> = new Map();
 
   constructor() {
@@ -303,6 +343,8 @@ class InMemoryDb {
     this.supportMessages = [];
     this.supportAttachments = [];
     this.notifications = [];
+    this.accountTransfers.clear();
+    this.tradingPasswordResets.clear();
     this.systemSettings.clear();
   }
 }
