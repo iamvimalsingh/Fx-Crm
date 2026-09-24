@@ -638,7 +638,7 @@ export function ClientTraderCockpit({
               Welcome, {user?.first_name || 'Trader'}
             </h2>
             <span className="px-2 py-0.5 rounded text-[11px] font-mono font-semibold bg-[#141b29] text-slate-300 border border-[#232d40]">
-              ID: {user?.id?.slice(0, 8) || 'Active'}
+              ID: {String(user?.id || '').slice(0, 8) || 'Active'}
             </span>
           </div>
           <p className="text-xs text-slate-400">

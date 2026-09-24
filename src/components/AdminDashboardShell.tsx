@@ -31,7 +31,63 @@ import {
   X,
   Bell,
   UserCheck,
+  AlertTriangle,
 } from 'lucide-react';
+
+interface AdminViewErrorBoundaryProps {
+  children: React.ReactNode;
+  moduleName?: string;
+}
+
+interface AdminViewErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class AdminViewErrorBoundary extends React.Component<
+  AdminViewErrorBoundaryProps,
+  AdminViewErrorBoundaryState
+> {
+  constructor(props: AdminViewErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): AdminViewErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error(`[AdminViewErrorBoundary:${this.props.moduleName}]`, error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="p-6 rounded-xl border border-red-500/30 bg-red-950/20 text-slate-200 space-y-4">
+          <div className="flex items-center gap-3 text-red-400">
+            <AlertTriangle className="w-5 h-5 flex-shrink-0" />
+            <h3 className="font-semibold text-sm">
+              Error rendering {this.props.moduleName || 'view'}
+            </h3>
+          </div>
+          <p className="text-xs text-slate-400">
+            {this.state.error?.message || 'A client-side error occurred in this module.'}
+          </p>
+          <div className="flex items-center gap-2 pt-2">
+            <button
+              onClick={() => this.setState({ hasError: false, error: null })}
+              className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-semibold transition"
+            >
+              Retry View
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 interface AdminDashboardShellProps {
   brokerName?: string;
@@ -398,21 +454,23 @@ export function AdminDashboardShell({
           </div>
 
           {/* Dynamic Module Views */}
-          {adminNav === 'dashboard' && (
-            <AdminOperationsDashboard onNavigateTab={(tab) => setAdminNav(tab)} />
-          )}
-          {adminNav === 'clients' && <AdminClientDirectoryView />}
-          {adminNav === 'trading_accounts' && <AdminTradingAccountsView />}
-          {adminNav === 'deposits' && <AdminFinancialView initialTab="deposits" />}
-          {adminNav === 'withdrawals' && <AdminFinancialView initialTab="withdrawals" />}
-          {adminNav === 'transfers' && <AdminFinancialView initialTab="transfers" />}
-          {adminNav === 'transactions' && <AdminFinancialView initialTab="transactions" />}
-          {adminNav === 'audit_logs' && <AdminFinancialView initialTab="audit_logs" />}
-          {adminNav === 'kyc' && <AdminKycView />}
-          {adminNav === 'support' && <AdminSupportView />}
-          {adminNav === 'notifications' && <AdminNotificationsView />}
-          {adminNav === 'staff' && <AdminStaffManagementView />}
-          {adminNav === 'settings' && <AdminBrokerSettingsView />}
+          <AdminViewErrorBoundary key={adminNav} moduleName={adminNav}>
+            {adminNav === 'dashboard' && (
+              <AdminOperationsDashboard onNavigateTab={(tab) => setAdminNav(tab)} />
+            )}
+            {adminNav === 'clients' && <AdminClientDirectoryView />}
+            {adminNav === 'trading_accounts' && <AdminTradingAccountsView />}
+            {adminNav === 'deposits' && <AdminFinancialView initialTab="deposits" />}
+            {adminNav === 'withdrawals' && <AdminFinancialView initialTab="withdrawals" />}
+            {adminNav === 'transfers' && <AdminFinancialView initialTab="transfers" />}
+            {adminNav === 'transactions' && <AdminFinancialView initialTab="transactions" />}
+            {adminNav === 'audit_logs' && <AdminFinancialView initialTab="audit_logs" />}
+            {adminNav === 'kyc' && <AdminKycView />}
+            {adminNav === 'support' && <AdminSupportView />}
+            {adminNav === 'notifications' && <AdminNotificationsView />}
+            {adminNav === 'staff' && <AdminStaffManagementView />}
+            {adminNav === 'settings' && <AdminBrokerSettingsView />}
+          </AdminViewErrorBoundary>
         </main>
       </div>
     </div>

@@ -55021,13 +55021,105 @@ var KycService = class {
       mimeType,
       "kyc"
     );
-    const profile = await this.getProfileByUserId(userId);
     const pool2 = getPool();
     const docId = crypto7.randomUUID();
     const now = /* @__PURE__ */ new Date();
+    let profileId = null;
+    if (pool2) {
+      const existingProfiles = await query(
+        `SELECT id, status FROM kyc_profiles WHERE user_id = $1 LIMIT 1`,
+        [userId]
+      );
+      if (existingProfiles.length > 0) {
+        profileId = existingProfiles[0].id;
+      } else {
+        const users = await query(
+          `SELECT first_name, last_name, country FROM users WHERE id = $1 LIMIT 1`,
+          [userId]
+        );
+        const user = users[0];
+        const newProfileId = crypto7.randomUUID();
+        const mappedIdType = documentType === "passport" ? "passport" : "national_id";
+        const insertedProfiles = await query(
+          `INSERT INTO kyc_profiles (
+            id, user_id, status, first_name, last_name, date_of_birth, nationality, country,
+            address_line1, city, postal_code, id_type, id_number, submitted_at, created_at, updated_at
+          ) VALUES (
+            $1, $2, 'pending', $3, $4, '1970-01-01', $5, $6,
+            'Pending verification', 'Pending', '00000', $7, 'PENDING_DOCUMENT', $8, $8, $8
+          )
+          ON CONFLICT (user_id) DO UPDATE SET updated_at = NOW()
+          RETURNING id, status`,
+          [
+            newProfileId,
+            userId,
+            user?.first_name || "Client",
+            user?.last_name || "User",
+            user?.country || "Unknown",
+            user?.country || "US",
+            mappedIdType,
+            now
+          ]
+        );
+        profileId = insertedProfiles[0]?.id || newProfileId;
+        await query(
+          `UPDATE kyc_documents SET profile_id = $1 WHERE user_id = $2 AND profile_id IS NULL`,
+          [profileId, userId]
+        );
+      }
+    } else {
+      let inMemProfile = inMemoryDb.kycProfiles.get(userId);
+      if (!inMemProfile) {
+        for (const p3 of inMemoryDb.kycProfiles.values()) {
+          if (p3.user_id === userId) {
+            inMemProfile = p3;
+            break;
+          }
+        }
+      }
+      if (inMemProfile && inMemProfile.id) {
+        profileId = inMemProfile.id;
+      } else {
+        const user = inMemoryDb.users.get(userId);
+        const newProfileId = crypto7.randomUUID();
+        const mappedIdType = documentType === "passport" ? "passport" : "national_id";
+        const baselineProfile = {
+          id: newProfileId,
+          user_id: userId,
+          status: "pending",
+          first_name: user?.first_name || "Client",
+          last_name: user?.last_name || "User",
+          date_of_birth: /* @__PURE__ */ new Date("1970-01-01"),
+          nationality: user?.country || "Unknown",
+          country: user?.country || "US",
+          address_line1: "Pending verification",
+          address_line2: null,
+          city: "Pending",
+          state_province: null,
+          postal_code: "00000",
+          id_type: mappedIdType,
+          id_number: "PENDING_DOCUMENT",
+          rejection_reason: null,
+          admin_notes: null,
+          submitted_at: now,
+          reviewed_at: null,
+          reviewed_by: null,
+          created_at: now,
+          updated_at: now
+        };
+        inMemoryDb.kycProfiles.set(newProfileId, baselineProfile);
+        inMemoryDb.kycProfiles.set(userId, baselineProfile);
+        profileId = newProfileId;
+        for (const d5 of inMemoryDb.kycDocuments.values()) {
+          if (d5.user_id === userId && !d5.profile_id) {
+            d5.profile_id = profileId;
+          }
+        }
+      }
+    }
     const record2 = {
       id: docId,
-      profile_id: profile?.id || null,
+      profile_id: profileId,
       user_id: userId,
       document_type: documentType,
       object_key: storageResult.objectKey,
@@ -77169,7 +77261,15 @@ var handler = async (event, context) => {
         return {
           statusCode: 200,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ status: "success", data: profile })
+          body: JSON.stringify({
+            status: "success",
+            data: {
+              ...profile,
+              profile,
+              documents: profile.documents || [],
+              user: profile.user
+            }
+          })
         };
       }
       const adminKycReviewMatch = path2.match(/^\/admin\/kyc\/([^/]+)\/review$/);

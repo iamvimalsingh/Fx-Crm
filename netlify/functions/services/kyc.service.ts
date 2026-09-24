@@ -446,15 +446,118 @@ export class KycService {
       'kyc'
     );
 
-    // 2. Link with user's KYC profile if present
-    const profile = await this.getProfileByUserId(userId);
+    // 2. Link with user's KYC profile if present, or create minimal baseline profile
     const pool = getPool();
     const docId = crypto.randomUUID();
     const now = new Date();
+    let profileId: string | null = null;
+
+    if (pool) {
+      // 2a. Look up real kyc_profiles record
+      const existingProfiles = await query<KycProfileRecord>(
+        `SELECT id, status FROM kyc_profiles WHERE user_id = $1 LIMIT 1`,
+        [userId]
+      );
+
+      if (existingProfiles.length > 0) {
+        profileId = existingProfiles[0].id;
+      } else {
+        // 2b. Baseline profile creation using available user details
+        const users = await query<UserRecord>(
+          `SELECT first_name, last_name, country FROM users WHERE id = $1 LIMIT 1`,
+          [userId]
+        );
+        const user = users[0];
+        const newProfileId = crypto.randomUUID();
+        const mappedIdType: 'passport' | 'national_id' | 'drivers_license' | 'residence_permit' =
+          documentType === 'passport' ? 'passport' : 'national_id';
+
+        // Insert minimal baseline profile for uploaded document (idempotent with ON CONFLICT)
+        const insertedProfiles = await query<KycProfileRecord>(
+          `INSERT INTO kyc_profiles (
+            id, user_id, status, first_name, last_name, date_of_birth, nationality, country,
+            address_line1, city, postal_code, id_type, id_number, submitted_at, created_at, updated_at
+          ) VALUES (
+            $1, $2, 'pending', $3, $4, '1970-01-01', $5, $6,
+            'Pending verification', 'Pending', '00000', $7, 'PENDING_DOCUMENT', $8, $8, $8
+          )
+          ON CONFLICT (user_id) DO UPDATE SET updated_at = NOW()
+          RETURNING id, status`,
+          [
+            newProfileId,
+            userId,
+            user?.first_name || 'Client',
+            user?.last_name || 'User',
+            user?.country || 'Unknown',
+            user?.country || 'US',
+            mappedIdType,
+            now,
+          ]
+        );
+        profileId = insertedProfiles[0]?.id || newProfileId;
+
+        // Also back-link any existing orphan documents for this user
+        await query(
+          `UPDATE kyc_documents SET profile_id = $1 WHERE user_id = $2 AND profile_id IS NULL`,
+          [profileId, userId]
+        );
+      }
+    } else {
+      let inMemProfile = inMemoryDb.kycProfiles.get(userId);
+      if (!inMemProfile) {
+        for (const p of inMemoryDb.kycProfiles.values()) {
+          if (p.user_id === userId) {
+            inMemProfile = p;
+            break;
+          }
+        }
+      }
+
+      if (inMemProfile && inMemProfile.id) {
+        profileId = inMemProfile.id;
+      } else {
+        const user = inMemoryDb.users.get(userId);
+        const newProfileId = crypto.randomUUID();
+        const mappedIdType = documentType === 'passport' ? 'passport' : 'national_id';
+        const baselineProfile: KycProfileRecord = {
+          id: newProfileId,
+          user_id: userId,
+          status: 'pending',
+          first_name: user?.first_name || 'Client',
+          last_name: user?.last_name || 'User',
+          date_of_birth: new Date('1970-01-01') as any,
+          nationality: user?.country || 'Unknown',
+          country: user?.country || 'US',
+          address_line1: 'Pending verification',
+          address_line2: null,
+          city: 'Pending',
+          state_province: null,
+          postal_code: '00000',
+          id_type: mappedIdType as any,
+          id_number: 'PENDING_DOCUMENT',
+          rejection_reason: null,
+          admin_notes: null,
+          submitted_at: now,
+          reviewed_at: null,
+          reviewed_by: null,
+          created_at: now,
+          updated_at: now,
+        };
+        inMemoryDb.kycProfiles.set(newProfileId, baselineProfile);
+        inMemoryDb.kycProfiles.set(userId, baselineProfile);
+        profileId = newProfileId;
+
+        for (const d of inMemoryDb.kycDocuments.values()) {
+          if (d.user_id === userId && !d.profile_id) {
+            d.profile_id = profileId;
+          }
+        }
+      }
+    }
 
     const record: KycDocumentRecord = {
       id: docId,
-      profile_id: profile?.id || null,
+      profile_id: profileId,
       user_id: userId,
       document_type: documentType,
       object_key: storageResult.objectKey,

@@ -238,7 +238,7 @@ export function ClientDashboardShell({
               <div className="text-xs font-semibold text-white truncate max-w-[120px]">
                 {user ? `${user.first_name} ${user.last_name}` : 'Client'}
               </div>
-              <div className="text-[10px] text-slate-400 font-mono">ID: {user?.id?.slice(0, 8) || 'Active'}</div>
+              <div className="text-[10px] text-slate-400 font-mono">ID: {String(user?.id || '').slice(0, 8) || 'Active'}</div>
             </div>
             <div className="w-8 h-8 rounded-full bg-blue-600/20 text-blue-400 border border-blue-500/30 flex items-center justify-center font-bold text-xs">
               {userInitials}

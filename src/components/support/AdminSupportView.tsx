@@ -24,6 +24,7 @@ import {
 interface AdminTicketItem {
   id: string;
   ticket_number: string;
+  ticket_no?: string;
   user_id: string;
   subject: string;
   category: string;
@@ -34,6 +35,11 @@ interface AdminTicketItem {
   created_at: string;
   updated_at: string;
   client?: {
+    first_name: string;
+    last_name: string;
+    email: string;
+  };
+  user?: {
     first_name: string;
     last_name: string;
     email: string;
@@ -102,7 +108,15 @@ export function AdminSupportView() {
       });
       const json = await res.json();
       if (json?.status === 'success' && json.data) {
-        setTickets(json.data.tickets || []);
+        const rawTickets: any[] = json.data.tickets || [];
+        const normalized: AdminTicketItem[] = rawTickets.map((t) => ({
+          ...t,
+          ticket_number: t.ticket_number || t.ticket_no || '',
+          ticket_no: t.ticket_no || t.ticket_number || '',
+          client: t.client || t.user,
+          user: t.user || t.client,
+        }));
+        setTickets(normalized);
       }
     } catch {
       // ignore
@@ -120,7 +134,31 @@ export function AdminSupportView() {
       });
       const json = await res.json();
       if (json?.status === 'success' && json.data) {
-        setTicketDetail(json.data);
+        const raw = json.data;
+        const normalizedDetail: AdminTicketDetail = {
+          ticket: {
+            id: raw.id || raw.ticket?.id || '',
+            ticket_number: raw.ticket_no || raw.ticket_number || raw.ticket?.ticket_number || raw.ticket?.ticket_no || '',
+            ticket_no: raw.ticket_no || raw.ticket_number || raw.ticket?.ticket_number || raw.ticket?.ticket_no || '',
+            user_id: raw.user_id || raw.ticket?.user_id || '',
+            subject: raw.subject || raw.ticket?.subject || '',
+            category: raw.category || raw.ticket?.category || 'general',
+            priority: raw.priority || raw.ticket?.priority || 'medium',
+            status: raw.status || raw.ticket?.status || 'open',
+            assigned_to: raw.assigned_to || raw.ticket?.assigned_to || null,
+            last_reply_at: raw.last_reply_at || raw.ticket?.last_reply_at || raw.created_at || '',
+            created_at: raw.created_at || raw.ticket?.created_at || '',
+            updated_at: raw.updated_at || raw.ticket?.updated_at || '',
+            client: raw.user || raw.client || raw.ticket?.client || raw.ticket?.user,
+            user: raw.user || raw.client || raw.ticket?.client || raw.ticket?.user,
+          },
+          messages: (raw.messages || raw.ticket?.messages || []).map((m: any) => ({
+            ...m,
+            sender: m.sender || m.user,
+            attachments: m.attachments || [],
+          })),
+        };
+        setTicketDetail(normalizedDetail);
       } else {
         setMessage({ type: 'error', text: json.message || 'Failed to load ticket details' });
       }
@@ -249,10 +287,10 @@ export function AdminSupportView() {
   const filteredTickets = tickets.filter((t) => {
     if (!searchTerm.trim()) return true;
     const term = searchTerm.toLowerCase();
-    const numMatch = t.ticket_number?.toLowerCase().includes(term);
-    const subMatch = t.subject?.toLowerCase().includes(term);
-    const clientMatch = t.client?.email?.toLowerCase().includes(term);
-    return numMatch || subMatch || clientMatch;
+    const tNum = (t.ticket_number || t.ticket_no || '').toLowerCase();
+    const subMatch = (t.subject || '').toLowerCase().includes(term);
+    const clientEmail = (t.client?.email || t.user?.email || '').toLowerCase();
+    return tNum.includes(term) || subMatch || clientEmail.includes(term);
   });
 
   return (
@@ -357,13 +395,19 @@ export function AdminSupportView() {
                 filteredTickets.map((t) => (
                   <tr key={t.id} className="hover:bg-[#21262d]/50 transition">
                     <td className="py-3 px-4 font-mono font-bold text-blue-400">
-                      #{t.ticket_number}
+                      #{t.ticket_number || t.ticket_no}
                     </td>
                     <td className="py-3 px-4">
                       <div className="font-semibold text-white">
-                        {t.client ? `${t.client.first_name} ${t.client.last_name}` : 'Client'}
+                        {t.client
+                          ? `${t.client.first_name} ${t.client.last_name}`
+                          : t.user
+                          ? `${t.user.first_name} ${t.user.last_name}`
+                          : 'Client'}
                       </div>
-                      <div className="text-[10px] text-slate-400 font-mono">{t.client?.email || t.user_id}</div>
+                      <div className="text-[10px] text-slate-400 font-mono">
+                        {t.client?.email || t.user?.email || t.user_id}
+                      </div>
                     </td>
                     <td className="py-3 px-4">
                       <div className="font-semibold text-slate-200 truncate max-w-xs">{t.subject}</div>
@@ -431,9 +475,9 @@ export function AdminSupportView() {
                 <HelpCircle className="w-5 h-5 text-purple-400" />
                 <div>
                   <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                    <span>Ticket #{ticketDetail?.ticket.ticket_number}</span>
+                    <span>Ticket #{ticketDetail?.ticket?.ticket_number || ticketDetail?.ticket?.ticket_no || '...'}</span>
                     <span className="text-slate-400 font-normal">|</span>
-                    <span>{ticketDetail?.ticket.subject}</span>
+                    <span>{ticketDetail?.ticket?.subject || ''}</span>
                   </h3>
                 </div>
               </div>
@@ -462,9 +506,13 @@ export function AdminSupportView() {
                         <span className="text-white font-semibold">
                           {ticketDetail.ticket.client
                             ? `${ticketDetail.ticket.client.first_name} ${ticketDetail.ticket.client.last_name}`
+                            : ticketDetail.ticket.user
+                            ? `${ticketDetail.ticket.user.first_name} ${ticketDetail.ticket.user.last_name}`
                             : 'Client'}
                         </span>
-                        <span className="font-mono text-blue-400">({ticketDetail.ticket.client?.email})</span>
+                        <span className="font-mono text-blue-400">
+                          ({ticketDetail.ticket.client?.email || ticketDetail.ticket.user?.email || ticketDetail.ticket.user_id})
+                        </span>
                       </div>
                       <div className="flex items-center gap-3 text-[11px] text-slate-400">
                         <span>Category: <strong className="text-white uppercase">{ticketDetail.ticket.category}</strong></span>

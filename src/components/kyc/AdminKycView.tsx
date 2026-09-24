@@ -193,10 +193,17 @@ export function AdminKycView() {
       });
       const json = await res.json();
       if (json?.status === 'success' && json.data) {
-        setDetailData(json.data);
-        setReviewAction(json.data.profile.status === 'pending' ? 'approved' : json.data.profile.status);
-        if (json.data.profile.admin_notes) setAdminNotes(json.data.profile.admin_notes);
-        if (json.data.profile.rejection_reason) setRejectionReason(json.data.profile.rejection_reason);
+        const profileObj = json.data.profile || json.data;
+        const docs = json.data.documents || profileObj.documents || [];
+        const payload: KycDetailResponse = {
+          profile: profileObj,
+          documents: docs,
+          user: json.data.user || profileObj.user,
+        };
+        setDetailData(payload);
+        setReviewAction(profileObj.status === 'pending' ? 'approved' : profileObj.status);
+        if (profileObj.admin_notes) setAdminNotes(profileObj.admin_notes);
+        if (profileObj.rejection_reason) setRejectionReason(profileObj.rejection_reason);
       }
     } catch (err: any) {
       setMessage({ type: 'error', text: err.message || 'Failed to fetch application details' });

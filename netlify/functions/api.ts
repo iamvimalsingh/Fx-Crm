@@ -1547,7 +1547,15 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
         return {
           statusCode: 200,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: 'success', data: profile }),
+          body: JSON.stringify({
+            status: 'success',
+            data: {
+              ...profile,
+              profile,
+              documents: profile.documents || [],
+              user: profile.user,
+            },
+          }),
         };
       }
 
