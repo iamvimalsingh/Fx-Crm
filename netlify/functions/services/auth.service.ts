@@ -395,6 +395,121 @@ export class AuthService {
   }
 
   /**
+   * Internal / Admin-Only Direct Password Reset (CLI / Emergency Recovery)
+   * Strictly verifies that the target account exists and has role = 'admin'.
+   * Never exposes plaintext password or password hash in return values or audit logs.
+   */
+  public static async resetAdminPasswordDirect(
+    adminEmail: string,
+    newPasswordPlaintext: string,
+    actorIdentifier: string = 'cli_admin_recovery'
+  ): Promise<{ success: boolean; userId: string; email: string }> {
+    const emailNormalized = adminEmail.trim().toLowerCase();
+
+    // 1. Password complexity check (minimum 8 chars, lowercase, uppercase, number, symbol)
+    if (
+      !newPasswordPlaintext ||
+      newPasswordPlaintext.length < 8 ||
+      !/[A-Z]/.test(newPasswordPlaintext) ||
+      !/[a-z]/.test(newPasswordPlaintext) ||
+      !/[0-9]/.test(newPasswordPlaintext) ||
+      !/[^A-Za-z0-9]/.test(newPasswordPlaintext)
+    ) {
+      throw new Error(
+        'Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, one number, and one special character.'
+      );
+    }
+
+    // 2. Identify existing admin user
+    let adminUser: UserRecord | null = null;
+    if (getPool()) {
+      const rows = await query<UserRecord>(
+        "SELECT id, email, role, status, first_name, last_name FROM users WHERE email = $1 AND role = 'admin'",
+        [emailNormalized]
+      );
+      adminUser = rows[0] || null;
+    } else {
+      const user = inMemoryDb.users.get(emailNormalized);
+      if (user && user.role === 'admin') {
+        adminUser = user;
+      }
+    }
+
+    if (!adminUser) {
+      throw new Error(`Admin user with email "${emailNormalized}" not found or does not have role="admin".`);
+    }
+
+    // 3. Hash password using bcryptjs (10 rounds) - matching standard registration
+    const newPasswordHash = await bcrypt.hash(newPasswordPlaintext, 10);
+    const now = new Date();
+
+    // 4. Update ONLY password_hash and updated_at
+    if (getPool()) {
+      await query(
+        "UPDATE users SET password_hash = $1, updated_at = $2 WHERE id = $3 AND role = 'admin'",
+        [newPasswordHash, now, adminUser.id]
+      );
+    } else {
+      const user = inMemoryDb.users.get(emailNormalized);
+      if (user) {
+        user.password_hash = newPasswordHash;
+        user.updated_at = now;
+      }
+    }
+
+    // 5. Invalidate any pending password reset tokens for this email
+    if (getPool()) {
+      await query('UPDATE password_resets SET used_at = $1 WHERE email = $2 AND used_at IS NULL', [
+        now,
+        emailNormalized,
+      ]);
+    } else {
+      for (const rec of inMemoryDb.passwordResets.values()) {
+        if (rec.email === emailNormalized && !rec.used_at) {
+          rec.used_at = now;
+        }
+      }
+    }
+
+    // 6. Record audit log without plaintext password or hash
+    await this.recordAuditLog(
+      adminUser.id,
+      'ADMIN_PASSWORD_RESET_DIRECT',
+      'user',
+      adminUser.id,
+      {
+        email: emailNormalized,
+        action: 'direct_admin_password_recovery',
+        actor: actorIdentifier,
+      },
+      '127.0.0.1',
+      'CLI Recovery Utility'
+    );
+
+    return {
+      success: true,
+      userId: adminUser.id,
+      email: emailNormalized,
+    };
+  }
+
+  /**
+   * Internal / Admin-Only list of admin accounts (CLI utility use only)
+   * Never exposes passwords, hashes, or sensitive tokens.
+   */
+  public static async listAdminAccounts(): Promise<Array<{ id: string; email: string; status: string; created_at?: Date }>> {
+    if (getPool()) {
+      return await query<any>(
+        "SELECT id, email, status, created_at FROM users WHERE role = 'admin' ORDER BY created_at ASC"
+      );
+    } else {
+      return Array.from(inMemoryDb.users.values())
+        .filter((u) => u.role === 'admin')
+        .map((u) => ({ id: u.id, email: u.email, status: u.status, created_at: u.created_at }));
+    }
+  }
+
+  /**
    * Check if at least one administrator account exists in the system
    */
   public static async hasAdmin(): Promise<boolean> {

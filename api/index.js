@@ -49497,6 +49497,92 @@ var AuthService = class {
     };
   }
   /**
+   * Internal / Admin-Only Direct Password Reset (CLI / Emergency Recovery)
+   * Strictly verifies that the target account exists and has role = 'admin'.
+   * Never exposes plaintext password or password hash in return values or audit logs.
+   */
+  static async resetAdminPasswordDirect(adminEmail, newPasswordPlaintext, actorIdentifier = "cli_admin_recovery") {
+    const emailNormalized = adminEmail.trim().toLowerCase();
+    if (!newPasswordPlaintext || newPasswordPlaintext.length < 8 || !/[A-Z]/.test(newPasswordPlaintext) || !/[a-z]/.test(newPasswordPlaintext) || !/[0-9]/.test(newPasswordPlaintext) || !/[^A-Za-z0-9]/.test(newPasswordPlaintext)) {
+      throw new Error(
+        "Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, one number, and one special character."
+      );
+    }
+    let adminUser = null;
+    if (getPool()) {
+      const rows = await query(
+        "SELECT id, email, role, status, first_name, last_name FROM users WHERE email = $1 AND role = 'admin'",
+        [emailNormalized]
+      );
+      adminUser = rows[0] || null;
+    } else {
+      const user = inMemoryDb.users.get(emailNormalized);
+      if (user && user.role === "admin") {
+        adminUser = user;
+      }
+    }
+    if (!adminUser) {
+      throw new Error(`Admin user with email "${emailNormalized}" not found or does not have role="admin".`);
+    }
+    const newPasswordHash = await bcryptjs_default.hash(newPasswordPlaintext, 10);
+    const now = /* @__PURE__ */ new Date();
+    if (getPool()) {
+      await query(
+        "UPDATE users SET password_hash = $1, updated_at = $2 WHERE id = $3 AND role = 'admin'",
+        [newPasswordHash, now, adminUser.id]
+      );
+    } else {
+      const user = inMemoryDb.users.get(emailNormalized);
+      if (user) {
+        user.password_hash = newPasswordHash;
+        user.updated_at = now;
+      }
+    }
+    if (getPool()) {
+      await query("UPDATE password_resets SET used_at = $1 WHERE email = $2 AND used_at IS NULL", [
+        now,
+        emailNormalized
+      ]);
+    } else {
+      for (const rec of inMemoryDb.passwordResets.values()) {
+        if (rec.email === emailNormalized && !rec.used_at) {
+          rec.used_at = now;
+        }
+      }
+    }
+    await this.recordAuditLog(
+      adminUser.id,
+      "ADMIN_PASSWORD_RESET_DIRECT",
+      "user",
+      adminUser.id,
+      {
+        email: emailNormalized,
+        action: "direct_admin_password_recovery",
+        actor: actorIdentifier
+      },
+      "127.0.0.1",
+      "CLI Recovery Utility"
+    );
+    return {
+      success: true,
+      userId: adminUser.id,
+      email: emailNormalized
+    };
+  }
+  /**
+   * Internal / Admin-Only list of admin accounts (CLI utility use only)
+   * Never exposes passwords, hashes, or sensitive tokens.
+   */
+  static async listAdminAccounts() {
+    if (getPool()) {
+      return await query(
+        "SELECT id, email, status, created_at FROM users WHERE role = 'admin' ORDER BY created_at ASC"
+      );
+    } else {
+      return Array.from(inMemoryDb.users.values()).filter((u) => u.role === "admin").map((u) => ({ id: u.id, email: u.email, status: u.status, created_at: u.created_at }));
+    }
+  }
+  /**
    * Check if at least one administrator account exists in the system
    */
   static async hasAdmin() {
