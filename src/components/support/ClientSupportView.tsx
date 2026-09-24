@@ -125,7 +125,23 @@ export function ClientSupportView({ initialTicketId }: ClientSupportViewProps) {
       });
       const json = await res.json();
       if (res.ok && json.status === 'success' && json.data) {
-        setTicketDetail(json.data);
+        const raw = json.data;
+        const normalized: TicketDetail = {
+          ticket: raw.ticket || {
+            id: raw.id || '',
+            ticket_number: raw.ticket_number || raw.ticket_no || '',
+            user_id: raw.user_id || '',
+            subject: raw.subject || '',
+            category: raw.category || 'general',
+            priority: raw.priority || 'medium',
+            status: raw.status || 'open',
+            last_reply_at: raw.last_reply_at || raw.created_at || '',
+            created_at: raw.created_at || '',
+            updated_at: raw.updated_at || '',
+          },
+          messages: raw.messages || raw.ticket?.messages || [],
+        };
+        setTicketDetail(normalized);
         setActiveTab('detail');
       } else {
         setMessage({ type: 'error', text: json.message || 'Failed to load ticket details' });
@@ -226,13 +242,14 @@ export function ClientSupportView({ initialTicketId }: ClientSupportViewProps) {
 
   const handleReplyTicket = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!token || !ticketDetail || !replyText.trim()) return;
+    const ticketId = ticketDetail?.ticket?.id;
+    if (!token || !ticketId || !replyText.trim()) return;
 
     setSubmittingReply(true);
     setMessage(null);
 
     try {
-      const res = await fetch(`/api/support/tickets/${ticketDetail.ticket.id}/reply`, {
+      const res = await fetch(`/api/support/tickets/${ticketId}/reply`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -248,7 +265,7 @@ export function ClientSupportView({ initialTicketId }: ClientSupportViewProps) {
       if (res.ok && json.status === 'success') {
         setReplyText('');
         setReplyAttachments([]);
-        fetchTicketDetail(ticketDetail.ticket.id);
+        fetchTicketDetail(ticketId);
         fetchTickets();
       } else {
         setMessage({ type: 'error', text: json.message || 'Could not post reply' });
@@ -261,11 +278,12 @@ export function ClientSupportView({ initialTicketId }: ClientSupportViewProps) {
   };
 
   const handleCloseTicket = async () => {
-    if (!token || !ticketDetail) return;
+    const ticketId = ticketDetail?.ticket?.id;
+    if (!token || !ticketId) return;
     if (!window.confirm('Are you sure you want to mark this support ticket as closed?')) return;
 
     try {
-      const res = await fetch(`/api/support/tickets/${ticketDetail.ticket.id}/status`, {
+      const res = await fetch(`/api/support/tickets/${ticketId}/status`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -275,7 +293,7 @@ export function ClientSupportView({ initialTicketId }: ClientSupportViewProps) {
       });
       if (res.ok) {
         setMessage({ type: 'success', text: 'Ticket closed successfully.' });
-        fetchTicketDetail(ticketDetail.ticket.id);
+        fetchTicketDetail(ticketId);
         fetchTickets();
       }
     } catch {
@@ -630,21 +648,21 @@ export function ClientSupportView({ initialTicketId }: ClientSupportViewProps) {
             <div>
               <div className="flex items-center gap-2 flex-wrap mb-1">
                 <span className="font-mono text-blue-400 font-bold text-sm">
-                  #{ticketDetail.ticket.ticket_number}
+                  #{ticketDetail.ticket?.ticket_number || ticketDetail.ticket?.id || ''}
                 </span>
-                <h3 className="text-sm font-bold text-white">{ticketDetail.ticket.subject}</h3>
-                {getPriorityBadge(ticketDetail.ticket.priority)}
-                {getStatusBadge(ticketDetail.ticket.status)}
+                <h3 className="text-sm font-bold text-white">{ticketDetail.ticket?.subject || 'Support Ticket'}</h3>
+                {getPriorityBadge(ticketDetail.ticket?.priority || 'medium')}
+                {getStatusBadge(ticketDetail.ticket?.status || 'open')}
               </div>
               <div className="text-slate-400 text-[11px] flex items-center gap-2">
-                <span className="capitalize">Department: {ticketDetail.ticket.category}</span>
+                <span className="capitalize">Department: {ticketDetail.ticket?.category || 'general'}</span>
                 <span>•</span>
-                <span>Opened {new Date(ticketDetail.ticket.created_at).toLocaleString()}</span>
+                <span>Opened {ticketDetail.ticket?.created_at ? new Date(ticketDetail.ticket.created_at).toLocaleString() : ''}</span>
               </div>
             </div>
 
             <div className="flex items-center gap-2">
-              {ticketDetail.ticket.status !== 'closed' && (
+              {ticketDetail.ticket?.status !== 'closed' && (
                 <button
                   onClick={handleCloseTicket}
                   className="px-3 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 font-semibold"
@@ -653,7 +671,7 @@ export function ClientSupportView({ initialTicketId }: ClientSupportViewProps) {
                 </button>
               )}
               <button
-                onClick={() => fetchTicketDetail(ticketDetail.ticket.id)}
+                onClick={() => ticketDetail.ticket?.id && fetchTicketDetail(ticketDetail.ticket.id)}
                 disabled={loadingDetail}
                 className="p-1.5 rounded-lg bg-[#182030] hover:bg-[#222c42] border border-[#26334d] text-slate-300"
                 title="Refresh conversation"
@@ -665,7 +683,7 @@ export function ClientSupportView({ initialTicketId }: ClientSupportViewProps) {
 
           {/* Conversation Stream */}
           <div className="space-y-3">
-            {ticketDetail.messages.map((msg) => {
+            {(ticketDetail.messages || []).map((msg) => {
               const isClient = msg.sender_role === 'client';
               return (
                 <div
@@ -695,7 +713,7 @@ export function ClientSupportView({ initialTicketId }: ClientSupportViewProps) {
                       )}
                     </div>
                     <span className="text-[10px] text-slate-400 font-mono">
-                      {new Date(msg.created_at).toLocaleString()}
+                      {msg.created_at ? new Date(msg.created_at).toLocaleString() : ''}
                     </span>
                   </div>
 
@@ -718,7 +736,7 @@ export function ClientSupportView({ initialTicketId }: ClientSupportViewProps) {
                             <Paperclip className="w-3 h-3" />
                             <span>{att.original_filename}</span>
                             <span className="text-slate-500 text-[10px]">
-                              ({(att.file_size / 1024).toFixed(0)} KB)
+                              ({(att.file_size ? att.file_size / 1024 : 0).toFixed(0)} KB)
                             </span>
                           </button>
                         );
@@ -731,7 +749,7 @@ export function ClientSupportView({ initialTicketId }: ClientSupportViewProps) {
           </div>
 
           {/* Reply Composer */}
-          {ticketDetail.ticket.status === 'closed' ? (
+          {ticketDetail.ticket?.status === 'closed' ? (
             <div className="p-4 rounded-xl bg-[#121824] border border-[#26334d] text-center text-slate-400 text-xs">
               This ticket has been marked as closed. If you have any further questions, please open a new support ticket.
             </div>
