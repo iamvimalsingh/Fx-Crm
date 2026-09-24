@@ -50027,7 +50027,7 @@ var AuthService = class {
       );
       const auditLogs = await query(
         `SELECT id, action, entity_type, entity_id, details, created_at
-         FROM audit_logs WHERE (entity_type = 'user' AND entity_id = $1) OR actor_id = $1
+         FROM audit_logs WHERE (entity_type = 'user' AND entity_id = $1) OR actor_id = $1::uuid
          ORDER BY created_at DESC LIMIT 10`,
         [clientId]
       );
