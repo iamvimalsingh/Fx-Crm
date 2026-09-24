@@ -69,6 +69,35 @@ interface KycDetailResponse {
   };
 }
 
+function normalizeKycProfile(item: any): KycProfileAdminItem {
+  if (!item) return item;
+  return {
+    id: item.id || '',
+    user_id: item.user_id || '',
+    first_name: item.first_name || '',
+    last_name: item.last_name || '',
+    date_of_birth: item.date_of_birth || '',
+    nationality: item.nationality || '',
+    country_of_residence: item.country ?? item.country_of_residence ?? '',
+    address_line1: item.address ?? item.address_line1 ?? '',
+    city: item.city || '',
+    postal_code: item.postal_code || '',
+    id_document_type: item.id_type ?? item.id_document_type ?? '',
+    id_document_number: item.id_number ?? item.id_document_number ?? '',
+    id_expiry_date: item.id_expiry ?? item.id_expiry_date ?? null,
+    status: item.status || 'pending',
+    rejection_reason: item.rejection_reason || null,
+    admin_notes: item.admin_notes || null,
+    reviewed_by: item.reviewed_by || null,
+    reviewed_at: item.reviewed_at || null,
+    submitted_at: item.submitted_at || null,
+    created_at: item.created_at || '',
+    updated_at: item.updated_at || '',
+    user: item.user,
+    document_count: Number(item.document_count) || 0,
+  };
+}
+
 export function AdminKycView() {
   const { token, user: adminUser } = useAuth();
   const [profiles, setProfiles] = useState<KycProfileAdminItem[]>([]);
@@ -104,7 +133,8 @@ export function AdminKycView() {
       });
       const json = await res.json();
       if (json?.status === 'success' && json.data) {
-        setProfiles(json.data.profiles || []);
+        const rawProfiles = Array.isArray(json.data.profiles) ? json.data.profiles : [];
+        setProfiles(rawProfiles.map(normalizeKycProfile));
       }
     } catch {
       // ignore
@@ -193,12 +223,18 @@ export function AdminKycView() {
       });
       const json = await res.json();
       if (json?.status === 'success' && json.data) {
-        const profileObj = json.data.profile || json.data;
-        const docs = json.data.documents || profileObj.documents || [];
+        const rawProfile = json.data.profile || json.data;
+        const profileObj = normalizeKycProfile(rawProfile);
+        const docs = (json.data.documents || rawProfile.documents || []).map((doc: any) => ({
+          ...doc,
+          document_type: String(doc?.document_type || 'document'),
+          original_filename: String(doc?.original_filename || 'Document'),
+          file_size: Number(doc?.file_size) || 0,
+        }));
         const payload: KycDetailResponse = {
           profile: profileObj,
           documents: docs,
-          user: json.data.user || profileObj.user,
+          user: json.data.user || rawProfile.user,
         };
         setDetailData(payload);
         setReviewAction(profileObj.status === 'pending' ? 'approved' : profileObj.status);
@@ -335,7 +371,7 @@ export function AdminKycView() {
                   : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              {st.replace('_', ' ')}
+              {(st || '').replace('_', ' ')}
             </button>
           ))}
         </div>
@@ -393,12 +429,12 @@ export function AdminKycView() {
                       </div>
                     </td>
                     <td className="py-3 px-4">
-                      <span>{p.country_of_residence}</span>
-                      <span className="text-[10px] text-slate-400 ml-1 font-mono">({p.nationality})</span>
+                      <span>{p.country_of_residence || '—'}</span>
+                      <span className="text-[10px] text-slate-400 ml-1 font-mono">({p.nationality || '—'})</span>
                     </td>
                     <td className="py-3 px-4">
-                      <span className="capitalize">{p.id_document_type.replace('_', ' ')}</span>
-                      <div className="text-[10px] text-slate-400 font-mono">{p.id_document_number}</div>
+                      <span className="capitalize">{(p.id_document_type || 'document').replace('_', ' ')}</span>
+                      <div className="text-[10px] text-slate-400 font-mono">{p.id_document_number || '—'}</div>
                     </td>
                     <td className="py-3 px-4 text-slate-400 font-mono text-[11px]">
                       {p.submitted_at ? new Date(p.submitted_at).toLocaleDateString() : '—'}
@@ -418,7 +454,7 @@ export function AdminKycView() {
                             : 'bg-rose-500/20 text-rose-400'
                         }`}
                       >
-                        {p.status.replace('_', ' ')}
+                        {(p.status || 'pending').replace('_', ' ')}
                       </span>
                     </td>
                     <td className="py-3 px-4 text-right">
@@ -529,24 +565,24 @@ export function AdminKycView() {
                     <div>
                       <span className="text-slate-400 block text-[11px]">Nationality / Residence:</span>
                       <span className="text-slate-200">
-                        {detailData.profile.nationality} / {detailData.profile.country_of_residence}
+                        {detailData.profile.nationality || '—'} / {detailData.profile.country_of_residence || '—'}
                       </span>
                     </div>
                     <div>
                       <span className="text-slate-400 block text-[11px]">Residential Address:</span>
                       <span className="text-slate-200">
-                        {detailData.profile.address_line1}, {detailData.profile.city} {detailData.profile.postal_code}
+                        {detailData.profile.address_line1 || '—'}, {detailData.profile.city || ''} {detailData.profile.postal_code || ''}
                       </span>
                     </div>
                     <div>
                       <span className="text-slate-400 block text-[11px]">Document Type:</span>
                       <span className="text-slate-200 capitalize">
-                        {detailData.profile.id_document_type.replace('_', ' ')}
+                        {(detailData.profile.id_document_type || 'document').replace('_', ' ')}
                       </span>
                     </div>
                     <div>
                       <span className="text-slate-400 block text-[11px]">Document Number:</span>
-                      <span className="text-slate-200 font-mono">{detailData.profile.id_document_number}</span>
+                      <span className="text-slate-200 font-mono">{detailData.profile.id_document_number || '—'}</span>
                     </div>
                     <div>
                       <span className="text-slate-400 block text-[11px]">Expiration Date:</span>
@@ -579,7 +615,7 @@ export function AdminKycView() {
                                 {doc.original_filename}
                               </span>
                               <div className="text-[10px] text-slate-400 font-mono">
-                                {doc.document_type.replace('_', ' ')} • {(doc.file_size / 1024).toFixed(1)} KB
+                                {(doc.document_type || 'document').replace('_', ' ')} • {((doc.file_size || 0) / 1024).toFixed(1)} KB
                               </div>
                             </div>
 

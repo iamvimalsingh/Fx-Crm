@@ -50213,10 +50213,19 @@ var AuthService = class {
         err.statusCode = 400;
         throw err;
       }
-      const pendingTransfers = await query(
-        `SELECT id FROM account_transfers WHERE user_id = $1 AND status = 'pending'`,
-        [clientId]
-      );
+      let pendingTransfers = [];
+      try {
+        pendingTransfers = await query(
+          `SELECT id FROM account_transfers WHERE user_id = $1 AND status = 'pending'`,
+          [clientId]
+        );
+      } catch (tableErr) {
+        if (tableErr?.code === "42P01" || tableErr?.message && tableErr.message.includes('relation "account_transfers" does not exist')) {
+          pendingTransfers = [];
+        } else {
+          throw tableErr;
+        }
+      }
       if (pendingTransfers.length > 0) {
         const err = new Error("Cannot delete client with pending account transfers. Please resolve transfers first.");
         err.statusCode = 400;
@@ -50237,11 +50246,20 @@ var AuthService = class {
         [clientId]
       );
       const wthCount = parseInt(wthRows[0]?.count || "0", 10);
-      const trRows = await query(
-        `SELECT COUNT(*) as count FROM account_transfers WHERE user_id = $1`,
-        [clientId]
-      );
-      const trCount = parseInt(trRows[0]?.count || "0", 10);
+      let trCount = 0;
+      try {
+        const trRows = await query(
+          `SELECT COUNT(*) as count FROM account_transfers WHERE user_id = $1`,
+          [clientId]
+        );
+        trCount = parseInt(trRows[0]?.count || "0", 10);
+      } catch (tableErr) {
+        if (tableErr?.code === "42P01" || tableErr?.message && tableErr.message.includes('relation "account_transfers" does not exist')) {
+          trCount = 0;
+        } else {
+          throw tableErr;
+        }
+      }
       const hasFinancialHistory = txCount > 0 || depCount > 0 || wthCount > 0 || trCount > 0;
       if (hasFinancialHistory) {
         await query(
@@ -50282,9 +50300,21 @@ var AuthService = class {
         await query(`DELETE FROM support_tickets WHERE user_id = $1`, [clientId]);
         await query(`DELETE FROM kyc_documents WHERE user_id = $1`, [clientId]);
         await query(`DELETE FROM kyc_profiles WHERE user_id = $1`, [clientId]);
-        await query(`DELETE FROM trading_password_resets WHERE user_id = $1`, [clientId]);
+        try {
+          await query(`DELETE FROM trading_password_resets WHERE user_id = $1`, [clientId]);
+        } catch (tableErr) {
+          if (tableErr?.code !== "42P01" && !(tableErr?.message && tableErr.message.includes('relation "trading_password_resets" does not exist'))) {
+            throw tableErr;
+          }
+        }
         await query(`DELETE FROM trading_accounts WHERE user_id = $1`, [clientId]);
-        await query(`DELETE FROM account_transfers WHERE user_id = $1`, [clientId]);
+        try {
+          await query(`DELETE FROM account_transfers WHERE user_id = $1`, [clientId]);
+        } catch (tableErr) {
+          if (tableErr?.code !== "42P01" && !(tableErr?.message && tableErr.message.includes('relation "account_transfers" does not exist'))) {
+            throw tableErr;
+          }
+        }
         await query(`DELETE FROM deposits WHERE user_id = $1`, [clientId]);
         await query(`DELETE FROM withdrawals WHERE user_id = $1`, [clientId]);
         await query(`DELETE FROM transactions WHERE user_id = $1`, [clientId]);

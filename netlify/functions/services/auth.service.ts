@@ -1265,10 +1265,20 @@ export class AuthService {
         throw err;
       }
 
-      const pendingTransfers = await query<any>(
-        `SELECT id FROM account_transfers WHERE user_id = $1 AND status = 'pending'`,
-        [clientId]
-      );
+      let pendingTransfers: any[] = [];
+      try {
+        pendingTransfers = await query<any>(
+          `SELECT id FROM account_transfers WHERE user_id = $1 AND status = 'pending'`,
+          [clientId]
+        );
+      } catch (tableErr: any) {
+        // Tolerates missing relation in older production schema (PostgreSQL code 42P01: undefined_table)
+        if (tableErr?.code === '42P01' || (tableErr?.message && tableErr.message.includes('relation "account_transfers" does not exist'))) {
+          pendingTransfers = [];
+        } else {
+          throw tableErr;
+        }
+      }
       if (pendingTransfers.length > 0) {
         const err: any = new Error('Cannot delete client with pending account transfers. Please resolve transfers first.');
         err.statusCode = 400;
@@ -1294,11 +1304,21 @@ export class AuthService {
       );
       const wthCount = parseInt(wthRows[0]?.count || '0', 10);
 
-      const trRows = await query<any>(
-        `SELECT COUNT(*) as count FROM account_transfers WHERE user_id = $1`,
-        [clientId]
-      );
-      const trCount = parseInt(trRows[0]?.count || '0', 10);
+      let trCount = 0;
+      try {
+        const trRows = await query<any>(
+          `SELECT COUNT(*) as count FROM account_transfers WHERE user_id = $1`,
+          [clientId]
+        );
+        trCount = parseInt(trRows[0]?.count || '0', 10);
+      } catch (tableErr: any) {
+        // Tolerates missing relation in older production schema (PostgreSQL code 42P01: undefined_table)
+        if (tableErr?.code === '42P01' || (tableErr?.message && tableErr.message.includes('relation "account_transfers" does not exist'))) {
+          trCount = 0;
+        } else {
+          throw tableErr;
+        }
+      }
 
       const hasFinancialHistory = txCount > 0 || depCount > 0 || wthCount > 0 || trCount > 0;
 
@@ -1345,9 +1365,23 @@ export class AuthService {
         await query(`DELETE FROM support_tickets WHERE user_id = $1`, [clientId]);
         await query(`DELETE FROM kyc_documents WHERE user_id = $1`, [clientId]);
         await query(`DELETE FROM kyc_profiles WHERE user_id = $1`, [clientId]);
-        await query(`DELETE FROM trading_password_resets WHERE user_id = $1`, [clientId]);
+        try {
+          await query(`DELETE FROM trading_password_resets WHERE user_id = $1`, [clientId]);
+        } catch (tableErr: any) {
+          // Tolerates missing relation in older production schema (PostgreSQL code 42P01: undefined_table)
+          if (tableErr?.code !== '42P01' && !(tableErr?.message && tableErr.message.includes('relation "trading_password_resets" does not exist'))) {
+            throw tableErr;
+          }
+        }
         await query(`DELETE FROM trading_accounts WHERE user_id = $1`, [clientId]);
-        await query(`DELETE FROM account_transfers WHERE user_id = $1`, [clientId]);
+        try {
+          await query(`DELETE FROM account_transfers WHERE user_id = $1`, [clientId]);
+        } catch (tableErr: any) {
+          // Tolerates missing relation in older production schema (PostgreSQL code 42P01: undefined_table)
+          if (tableErr?.code !== '42P01' && !(tableErr?.message && tableErr.message.includes('relation "account_transfers" does not exist'))) {
+            throw tableErr;
+          }
+        }
         await query(`DELETE FROM deposits WHERE user_id = $1`, [clientId]);
         await query(`DELETE FROM withdrawals WHERE user_id = $1`, [clientId]);
         await query(`DELETE FROM transactions WHERE user_id = $1`, [clientId]);
