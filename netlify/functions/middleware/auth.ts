@@ -50,6 +50,18 @@ export interface TokenPayload {
   role: 'client' | 'admin';
 }
 
+export interface TradingSsoTokenPayload {
+  userId: string;
+  email: string;
+  role: 'client' | 'admin';
+  accountId?: string;
+  accountNumber?: string;
+  serverName?: string;
+  currency?: string;
+  platform?: string;
+  type: 'trading_sso';
+}
+
 export function generateToken(user: Pick<UserRecord, 'id' | 'email' | 'role'>): string {
   const secret = getJwtSecret();
   const payload: TokenPayload = {
@@ -58,6 +70,31 @@ export function generateToken(user: Pick<UserRecord, 'id' | 'email' | 'role'>): 
     role: user.role,
   };
   return jwt.sign(payload, secret, { expiresIn: JWT_EXPIRES_IN });
+}
+
+export function generateTradingSsoToken(
+  user: Pick<UserRecord, 'id' | 'email' | 'role'>,
+  accountInfo?: {
+    accountId?: string;
+    accountNumber?: string;
+    serverName?: string;
+    currency?: string;
+    platform?: string;
+  }
+): string {
+  const secret = getJwtSecret();
+  const payload: TradingSsoTokenPayload = {
+    userId: user.id,
+    email: user.email,
+    role: user.role,
+    accountId: accountInfo?.accountId,
+    accountNumber: accountInfo?.accountNumber,
+    serverName: accountInfo?.serverName,
+    currency: accountInfo?.currency,
+    platform: accountInfo?.platform,
+    type: 'trading_sso',
+  };
+  return jwt.sign(payload, secret, { expiresIn: '1d' });
 }
 
 export function verifyToken(token: string): TokenPayload | null {

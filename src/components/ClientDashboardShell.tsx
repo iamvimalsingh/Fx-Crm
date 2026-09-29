@@ -6,6 +6,7 @@ import { ClientTradingAccountsView } from './trading/ClientTradingAccountsView';
 import { ClientKycView } from './kyc/ClientKycView';
 import { ClientSupportView } from './support/ClientSupportView';
 import { ClientTraderCockpit } from './trading/ClientTraderCockpit';
+import { ClientWebTraderView } from './trading/ClientWebTraderView';
 import { NotificationCenter } from './notifications/NotificationCenter';
 import {
   Layout,
@@ -52,6 +53,7 @@ export function ClientDashboardShell({
   >('home');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [supportTicketContextId, setSupportTicketContextId] = useState<string | undefined>(undefined);
+  const [tradingAccountContextId, setTradingAccountContextId] = useState<string | undefined>(undefined);
   const [loggingOut, setLoggingOut] = useState(false);
   const [walletBalance, setWalletBalance] = useState<string>('0.00');
   const [kycStatus, setKycStatus] = useState<KycProgressionStatus>('not_started');
@@ -127,6 +129,9 @@ export function ClientDashboardShell({
       setClientNav(tab as any);
       if (contextId && tab === 'support') {
         setSupportTicketContextId(contextId);
+      }
+      if (contextId && tab === 'trade') {
+        setTradingAccountContextId(contextId);
       }
     }
   };
@@ -414,32 +419,38 @@ export function ClientDashboardShell({
         )}
 
         {/* Main Content Area */}
-        <main className="flex-grow p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full space-y-6">
-          {/* Breadcrumb / Title Bar */}
-          <div className="flex items-center justify-between border-b border-[#1b2333] pb-4">
-            <div>
-              <h1 className="text-lg sm:text-xl font-bold text-white tracking-tight">
-                {clientNav === 'home' && 'Trader Room Overview'}
-                {clientNav === 'accounts' && 'Trading Accounts'}
-                {clientNav === 'wallet' && 'Funding & Multi-Currency Wallet'}
-                {clientNav === 'trade' && 'WebTrader Platform'}
-                {clientNav === 'activity' && 'Account Activity & Ledger'}
-                {clientNav === 'kyc' && 'Identity & Verification (KYC)'}
-                {clientNav === 'support' && 'Support Tickets & Help Desk'}
-                {clientNav === 'profile' && 'Client Profile & Security'}
-              </h1>
-              <p className="text-xs text-slate-400 mt-0.5">
-                {clientNav === 'home' && 'Real-time overview of your balances, margin status, and live market rates'}
-                {clientNav === 'accounts' && 'Create and manage MT4, MT5, cTrader, and WebTrader live accounts'}
-                {clientNav === 'wallet' && 'Deposit, withdraw, and transfer funds securely'}
-                {clientNav === 'trade' && 'Launch live trading terminal and execute market orders'}
-                {clientNav === 'activity' && 'Detailed chronological history of all deposits, withdrawals, and ledger entries'}
-                {clientNav === 'kyc' && 'Upload proof of identity and address documents for regulatory approval'}
-                {clientNav === 'support' && 'Direct line to broker support staff and account managers'}
-                {clientNav === 'profile' && 'Manage your personal details, registered currency, and security credentials'}
-              </p>
+        <main
+          className={`flex-grow ${
+            clientNav === 'trade'
+              ? 'p-2 sm:p-4 w-full flex flex-col min-h-0'
+              : 'p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full space-y-6'
+          }`}
+        >
+          {/* Breadcrumb / Title Bar (hidden on trade for immersive cockpit space) */}
+          {clientNav !== 'trade' && (
+            <div className="flex items-center justify-between border-b border-[#1b2333] pb-4">
+              <div>
+                <h1 className="text-lg sm:text-xl font-bold text-white tracking-tight">
+                  {clientNav === 'home' && 'Trader Room Overview'}
+                  {clientNav === 'accounts' && 'Trading Accounts'}
+                  {clientNav === 'wallet' && 'Funding & Multi-Currency Wallet'}
+                  {clientNav === 'activity' && 'Account Activity & Ledger'}
+                  {clientNav === 'kyc' && 'Identity & Verification (KYC)'}
+                  {clientNav === 'support' && 'Support Tickets & Help Desk'}
+                  {clientNav === 'profile' && 'Client Profile & Security'}
+                </h1>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  {clientNav === 'home' && 'Real-time overview of your balances, margin status, and live market rates'}
+                  {clientNav === 'accounts' && 'Create and manage MT4, MT5, cTrader, and WebTrader live accounts'}
+                  {clientNav === 'wallet' && 'Deposit, withdraw, and transfer funds securely'}
+                  {clientNav === 'activity' && 'Detailed chronological history of all deposits, withdrawals, and ledger entries'}
+                  {clientNav === 'kyc' && 'Upload proof of identity and address documents for regulatory approval'}
+                  {clientNav === 'support' && 'Direct line to broker support staff and account managers'}
+                  {clientNav === 'profile' && 'Manage your personal details, registered currency, and security credentials'}
+                </p>
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Tab Views */}
           {clientNav === 'home' && (
@@ -459,24 +470,10 @@ export function ClientDashboardShell({
           {clientNav === 'support' && <ClientSupportView initialTicketId={supportTicketContextId} />}
 
           {clientNav === 'trade' && (
-            <div className="bg-[#0c1018] border border-[#1b2333] rounded-2xl p-8 text-center space-y-4 max-w-xl mx-auto my-6">
-              <div className="w-14 h-14 rounded-2xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center mx-auto text-blue-400">
-                <Activity className="w-7 h-7" />
-              </div>
-              <h3 className="text-base font-bold text-white">WebTrader Platform Bridge</h3>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                Trade directly from your browser with live market execution, advanced charting, and integrated risk management.
-              </p>
-              <div className="pt-2">
-                <button
-                  type="button"
-                  onClick={() => setClientNav('accounts')}
-                  className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-5 py-2.5 rounded-xl text-xs font-semibold shadow-lg shadow-blue-600/20 transition"
-                >
-                  Configure Trading Account <ExternalLink className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
+            <ClientWebTraderView
+              onNavigate={handleDeepNavigate}
+              initialAccountId={tradingAccountContextId}
+            />
           )}
 
           {clientNav === 'profile' && (

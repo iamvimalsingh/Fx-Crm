@@ -6,7 +6,7 @@ import { KycService } from './services/kyc.service';
 import { SupportService } from './services/support.service';
 import { NotificationService } from './services/notification.service';
 import { StorageService } from './services/storage.service';
-import { authenticateRequest, JwtConfigurationError } from './middleware/auth';
+import { authenticateRequest, JwtConfigurationError, generateTradingSsoToken } from './middleware/auth';
 import { rateLimiter } from './middleware/rate-limiter';
 import {
   DatabaseGuard,
@@ -1012,6 +1012,98 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
           statusCode: 200,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: 'success', data: accounts }),
+        };
+      }
+
+      // GET or POST /api/trading-accounts/sso-token (Generate SSO token for trading terminal)
+      if (path === '/trading-accounts/sso-token' && (event.httpMethod === 'POST' || event.httpMethod === 'GET')) {
+        let accountId = event.queryStringParameters?.account_id || event.queryStringParameters?.accountId;
+        if (!accountId && event.body) {
+          try {
+            const body = parseRequestBody(event.body);
+            accountId = body.account_id || body.accountId;
+          } catch {
+            // ignore JSON parse error for optional body
+          }
+        }
+
+        let account: any = null;
+        if (accountId && accountId !== 'default') {
+          account = await TradingAccountService.getUserAccountById(authUser.id, accountId);
+        } else {
+          const accounts = await TradingAccountService.getUserAccounts(authUser.id);
+          account = accounts.find((a: any) => a.status === 'active') || accounts[0] || null;
+        }
+
+        const ssoToken = generateTradingSsoToken(authUser, account ? {
+          accountId: account.id,
+          accountNumber: account.account_number,
+          serverName: account.server_name,
+          currency: account.currency,
+          platform: account.platform,
+        } : undefined);
+
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            status: 'success',
+            data: {
+              token: ssoToken,
+              account: account ? {
+                id: account.id,
+                account_number: account.account_number,
+                platform: account.platform,
+                server_name: account.server_name,
+                currency: account.currency,
+                balance: account.balance,
+                equity: account.equity,
+                leverage: account.leverage,
+                status: account.status,
+              } : null,
+              terminal_url: (account && account.terminal_url) || process.env.VITE_TRADING_PLATFORM_URL || 'https://trading-platform-two-mu.vercel.app',
+            },
+          }),
+        };
+      }
+
+      // GET or POST /api/trading-accounts/:id/sso-token (Generate SSO token for specific account)
+      const ssoMatch = path.match(/^\/trading-accounts\/([^/]+)\/sso-token$/);
+      if (ssoMatch && (event.httpMethod === 'POST' || event.httpMethod === 'GET')) {
+        const accountId = ssoMatch[1];
+        let account: any = null;
+        if (accountId !== 'default') {
+          account = await TradingAccountService.getUserAccountById(authUser.id, accountId);
+        }
+        const ssoToken = generateTradingSsoToken(authUser, account ? {
+          accountId: account.id,
+          accountNumber: account.account_number,
+          serverName: account.server_name,
+          currency: account.currency,
+          platform: account.platform,
+        } : undefined);
+
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            status: 'success',
+            data: {
+              token: ssoToken,
+              account: account ? {
+                id: account.id,
+                account_number: account.account_number,
+                platform: account.platform,
+                server_name: account.server_name,
+                currency: account.currency,
+                balance: account.balance,
+                equity: account.equity,
+                leverage: account.leverage,
+                status: account.status,
+              } : null,
+              terminal_url: (account && account.terminal_url) || process.env.VITE_TRADING_PLATFORM_URL || 'https://trading-platform-two-mu.vercel.app',
+            },
+          }),
         };
       }
 

@@ -2433,8 +2433,9 @@ export function ClientTraderCockpit({
                 )}
                 <button
                   onClick={() => {
+                    const targetId = launchpadAccount.id;
                     setLaunchpadAccount(null);
-                    onNavigate('trade');
+                    onNavigate('trade', targetId);
                   }}
                   className="text-xs text-blue-400 hover:text-blue-300 font-semibold flex items-center gap-1"
                 >
