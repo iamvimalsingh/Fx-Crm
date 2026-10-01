@@ -6,7 +6,13 @@ import { KycService } from './services/kyc.service';
 import { SupportService } from './services/support.service';
 import { NotificationService } from './services/notification.service';
 import { StorageService } from './services/storage.service';
-import { authenticateRequest, JwtConfigurationError, generateTradingSsoToken } from './middleware/auth';
+import {
+  authenticateRequest,
+  JwtConfigurationError,
+  CrmLaunchSecretConfigurationError,
+  generateTradingLaunchToken,
+  generateTradingSsoToken,
+} from './middleware/auth';
 import { rateLimiter } from './middleware/rate-limiter';
 import {
   DatabaseGuard,
@@ -1041,6 +1047,8 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
           serverName: account.server_name,
           currency: account.currency,
           platform: account.platform,
+          accountType: account.account_type,
+          leverage: account.leverage,
         } : undefined);
 
         return {
@@ -1056,6 +1064,7 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
                 platform: account.platform,
                 server_name: account.server_name,
                 currency: account.currency,
+                account_type: account.account_type,
                 balance: account.balance,
                 equity: account.equity,
                 leverage: account.leverage,
@@ -1081,6 +1090,8 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
           serverName: account.server_name,
           currency: account.currency,
           platform: account.platform,
+          accountType: account.account_type,
+          leverage: account.leverage,
         } : undefined);
 
         return {
@@ -1096,6 +1107,7 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
                 platform: account.platform,
                 server_name: account.server_name,
                 currency: account.currency,
+                account_type: account.account_type,
                 balance: account.balance,
                 equity: account.equity,
                 leverage: account.leverage,

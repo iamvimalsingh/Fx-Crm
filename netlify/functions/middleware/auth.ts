@@ -8,7 +8,15 @@ export class JwtConfigurationError extends Error {
   }
 }
 
+export class CrmLaunchSecretConfigurationError extends Error {
+  constructor(message: string = 'CRM_LAUNCH_SECRET is not configured. Trading launch token issuance cannot proceed.') {
+    super(message);
+    this.name = 'CrmLaunchSecretConfigurationError';
+  }
+}
+
 const JWT_EXPIRES_IN = '7d';
+const TRADING_LAUNCH_TOKEN_EXPIRES_IN = '5m';
 
 /**
  * Validates and retrieves the JWT signing secret.
@@ -44,23 +52,63 @@ export function getJwtSecret(): string {
   return rawSecret;
 }
 
+/**
+ * Validates and retrieves the dedicated CRM_LAUNCH_SECRET used exclusively
+ * for signing short-lived CRM -> Trading Engine launch session tokens.
+ * Strictly separated from the general CRM JWT_SECRET.
+ */
+export function getCrmLaunchSecret(): string {
+  const rawSecret = process.env.CRM_LAUNCH_SECRET;
+  const isProd =
+    process.env.NODE_ENV === 'production' ||
+    process.env.APP_ENV === 'production' ||
+    process.env.NETLIFY === 'true' ||
+    process.env.CONTEXT === 'production';
+
+  if (!rawSecret || rawSecret.trim() === '') {
+    if (isProd) {
+      throw new CrmLaunchSecretConfigurationError(
+        'CRM_LAUNCH_SECRET is not configured in production environment. Trading launch token issuance is disabled.'
+      );
+    }
+    // Explicit automated test mode & development fallback
+    if (process.env.NODE_ENV === 'test' || process.env.CRM_TEST_MODE === 'true' || process.env.NODE_ENV === 'development') {
+      return 'test_only_crm_launch_secret_distinct_from_jwt_secret_32chars!';
+    }
+    throw new CrmLaunchSecretConfigurationError('CRM_LAUNCH_SECRET is required.');
+  }
+
+  if (isProd && rawSecret.length < 32) {
+    throw new CrmLaunchSecretConfigurationError(
+      'CRM_LAUNCH_SECRET must be at least 32 characters in production to guarantee cryptographic security.'
+    );
+  }
+
+  return rawSecret;
+}
+
 export interface TokenPayload {
   userId: string;
   email: string;
   role: 'client' | 'admin';
 }
 
-export interface TradingSsoTokenPayload {
+export interface TradingLaunchTokenPayload {
+  accountId: string;
+  accountNumber: string;
+  clientId: string;
   userId: string;
-  email: string;
-  role: 'client' | 'admin';
-  accountId?: string;
-  accountNumber?: string;
+  tenantId: string;
+  platform: string;
+  currency: string;
+  accountType: string;
+  leverage: string;
   serverName?: string;
-  currency?: string;
-  platform?: string;
-  type: 'trading_sso';
+  email?: string;
+  type: 'trading_session';
 }
+
+export type TradingSsoTokenPayload = TradingLaunchTokenPayload;
 
 export function generateToken(user: Pick<UserRecord, 'id' | 'email' | 'role'>): string {
   const secret = getJwtSecret();
@@ -72,6 +120,37 @@ export function generateToken(user: Pick<UserRecord, 'id' | 'email' | 'role'>): 
   return jwt.sign(payload, secret, { expiresIn: JWT_EXPIRES_IN });
 }
 
+export function generateTradingLaunchToken(
+  user: Pick<UserRecord, 'id' | 'email' | 'role'>,
+  account: {
+    id: string;
+    account_number: string;
+    server_name?: string | null;
+    currency?: string | null;
+    platform?: string | null;
+    account_type?: string | null;
+    leverage?: string | null;
+  },
+  tenantId: string = 'default'
+): string {
+  const secret = getCrmLaunchSecret();
+  const payload: TradingLaunchTokenPayload = {
+    accountId: account.id,
+    accountNumber: account.account_number,
+    clientId: String(user.id),
+    userId: String(user.id),
+    tenantId: tenantId || 'default',
+    platform: account.platform || 'MT5',
+    currency: account.currency || 'USD',
+    accountType: account.account_type || 'standard',
+    leverage: account.leverage || '1:100',
+    serverName: account.server_name || undefined,
+    email: user.email,
+    type: 'trading_session',
+  };
+  return jwt.sign(payload, secret, { expiresIn: TRADING_LAUNCH_TOKEN_EXPIRES_IN });
+}
+
 export function generateTradingSsoToken(
   user: Pick<UserRecord, 'id' | 'email' | 'role'>,
   accountInfo?: {
@@ -80,21 +159,33 @@ export function generateTradingSsoToken(
     serverName?: string;
     currency?: string;
     platform?: string;
-  }
+    accountType?: string;
+    leverage?: string;
+  },
+  tenantId: string = 'default'
 ): string {
-  const secret = getJwtSecret();
-  const payload: TradingSsoTokenPayload = {
-    userId: user.id,
-    email: user.email,
-    role: user.role,
-    accountId: accountInfo?.accountId,
-    accountNumber: accountInfo?.accountNumber,
-    serverName: accountInfo?.serverName,
-    currency: accountInfo?.currency,
-    platform: accountInfo?.platform,
-    type: 'trading_sso',
-  };
-  return jwt.sign(payload, secret, { expiresIn: '1d' });
+  return generateTradingLaunchToken(
+    user,
+    {
+      id: accountInfo?.accountId || 'default',
+      account_number: accountInfo?.accountNumber || 'default',
+      server_name: accountInfo?.serverName,
+      currency: accountInfo?.currency,
+      platform: accountInfo?.platform,
+      account_type: accountInfo?.accountType,
+      leverage: accountInfo?.leverage,
+    },
+    tenantId
+  );
+}
+
+export function verifyTradingLaunchToken(token: string): TradingLaunchTokenPayload | null {
+  try {
+    const secret = getCrmLaunchSecret();
+    return jwt.verify(token, secret) as TradingLaunchTokenPayload;
+  } catch {
+    return null;
+  }
 }
 
 export function verifyToken(token: string): TokenPayload | null {
