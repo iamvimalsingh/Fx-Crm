@@ -15,6 +15,7 @@ import {
   ApproveTradingAccountInput,
   RejectTradingAccountInput,
   AdminUpdateTradingAccountMetadataInput,
+  AdminProvisionTradingAccountInput,
 } from '../middleware/validation';
 
 export * from './trading-provider.contract';
@@ -109,29 +110,34 @@ export class TradingAccountService {
    * Safely decodes and hydrates a raw DB row or in-memory record into a full TradingAccountRecord
    */
   public static hydrateAccountRecord(row: any): TradingAccountRecord {
-    let demoPassword = row.password || null;
+    const isDemo = Boolean(row.is_demo);
+    let demoPassword = isDemo ? (row.password || null) : null;
     let demoBalance =
       row.balance !== undefined && row.balance !== null
         ? String(row.balance)
-        : row.is_demo
+        : isDemo
         ? '10000.00'
         : '0.00';
     let terminalUrl = row.terminal_url || null;
     let cleanInvestorNotes = row.investor_notes || null;
+    let externalAccountId = row.external_account_id || null;
+    let tenantId = row.tenant_id || 'default';
 
     if (row.investor_notes && typeof row.investor_notes === 'string' && row.investor_notes.startsWith('{')) {
       try {
         const meta = JSON.parse(row.investor_notes);
-        if (meta.password !== undefined) demoPassword = meta.password;
+        if (isDemo && meta.password !== undefined) demoPassword = meta.password;
         if (meta.balance !== undefined) demoBalance = meta.balance;
         if (meta.terminal_url !== undefined) terminalUrl = meta.terminal_url;
+        if (meta.external_account_id !== undefined) externalAccountId = meta.external_account_id;
+        if (meta.tenant_id !== undefined) tenantId = meta.tenant_id;
         if (meta.notes !== undefined) cleanInvestorNotes = meta.notes;
       } catch {
         // Leave unparsed if not JSON
       }
     }
 
-    if (row.is_demo) {
+    if (isDemo) {
       if (!demoBalance || demoBalance === '0' || demoBalance === '0.00') {
         demoBalance = '10000.00';
       }
@@ -154,8 +160,10 @@ export class TradingAccountService {
       leverage: row.leverage,
       status: row.status,
       nickname: row.nickname || null,
-      is_demo: Boolean(row.is_demo),
+      is_demo: isDemo,
       group_tier: row.group_tier || null,
+      external_account_id: externalAccountId,
+      tenant_id: tenantId,
       investor_notes: cleanInvestorNotes,
       admin_notes: row.admin_notes || null,
       rejection_reason: row.rejection_reason || null,
@@ -163,7 +171,7 @@ export class TradingAccountService {
       approved_by: row.approved_by || null,
       created_at: new Date(row.created_at),
       updated_at: new Date(row.updated_at),
-      password: demoPassword,
+      password: isDemo ? demoPassword : null, // Plaintext passwords are NEVER stored or returned for live accounts
       balance: demoBalance,
       terminal_url: terminalUrl,
     };
@@ -1031,10 +1039,13 @@ export class TradingAccountService {
     const updatedStatus = input.status || account.status;
     const updatedTerminalUrl = input.terminal_url !== undefined ? input.terminal_url?.trim() || null : (account.terminal_url || null);
     const updatedGroupTier = input.group_tier !== undefined ? input.group_tier?.trim() || null : account.group_tier;
+    const updatedExternalAccountId = input.external_account_id !== undefined ? input.external_account_id?.trim() || null : (account.external_account_id || null);
+    const updatedTenantId = input.tenant_id !== undefined ? input.tenant_id?.trim() || 'default' : (account.tenant_id || 'default');
     const updatedType = input.account_type || account.account_type;
     const updatedAdminNotes = input.admin_notes !== undefined ? input.admin_notes?.trim() || null : account.admin_notes;
     const updatedNickname = input.nickname !== undefined ? input.nickname?.trim() || null : account.nickname;
-    const updatedPassword = input.password !== undefined ? input.password?.trim() || null : account.password;
+    // Password updates are strictly restricted to demo accounts
+    const updatedPassword = account.is_demo && input.password !== undefined ? input.password?.trim() || null : (account.is_demo ? account.password : null);
 
     account.account_number = updatedAccountNumber;
     account.platform = updatedPlatform;
@@ -1045,6 +1056,8 @@ export class TradingAccountService {
     account.status = updatedStatus;
     account.terminal_url = updatedTerminalUrl;
     account.group_tier = updatedGroupTier;
+    account.external_account_id = updatedExternalAccountId;
+    account.tenant_id = updatedTenantId;
     account.account_type = updatedType;
     account.admin_notes = updatedAdminNotes;
     account.nickname = updatedNickname;
@@ -1054,26 +1067,51 @@ export class TradingAccountService {
     const pool = getPool();
     if (pool) {
       const serializedNotes = this.serializeMetadata(account);
-      await query(
-        `UPDATE trading_accounts 
-         SET account_number = $1, platform = $2, server_name = $3, currency = $4, leverage = $5, status = $6, group_tier = $7, account_type = $8, admin_notes = $9, nickname = $10, investor_notes = $11, updated_at = $12
-         WHERE id = $13`,
-        [
-          updatedAccountNumber,
-          updatedPlatform,
-          updatedServer,
-          updatedCurrency,
-          updatedLeverage,
-          updatedStatus,
-          updatedGroupTier,
-          updatedType,
-          updatedAdminNotes,
-          updatedNickname,
-          serializedNotes,
-          now,
-          accountId,
-        ]
-      );
+      try {
+        await query(
+          `UPDATE trading_accounts 
+           SET account_number = $1, platform = $2, server_name = $3, currency = $4, leverage = $5, status = $6, group_tier = $7, external_account_id = $8, tenant_id = $9, account_type = $10, admin_notes = $11, nickname = $12, investor_notes = $13, updated_at = $14
+           WHERE id = $15`,
+          [
+            updatedAccountNumber,
+            updatedPlatform,
+            updatedServer,
+            updatedCurrency,
+            updatedLeverage,
+            updatedStatus,
+            updatedGroupTier,
+            updatedExternalAccountId,
+            updatedTenantId,
+            updatedType,
+            updatedAdminNotes,
+            updatedNickname,
+            serializedNotes,
+            now,
+            accountId,
+          ]
+        );
+      } catch {
+        await query(
+          `UPDATE trading_accounts 
+           SET account_number = $1, platform = $2, server_name = $3, currency = $4, leverage = $5, status = $6, group_tier = $7, account_type = $8, admin_notes = $9, nickname = $10, investor_notes = $11, updated_at = $12
+           WHERE id = $13`,
+          [
+            updatedAccountNumber,
+            updatedPlatform,
+            updatedServer,
+            updatedCurrency,
+            updatedLeverage,
+            updatedStatus,
+            updatedGroupTier,
+            updatedType,
+            updatedAdminNotes,
+            updatedNickname,
+            serializedNotes,
+            now,
+            accountId,
+          ]
+        );
+      }
     } else {
       const record = inMemoryDb.tradingAccounts.get(accountId);
       if (record) {
@@ -1096,8 +1134,10 @@ export class TradingAccountService {
         status: account.status,
         terminal_url: account.terminal_url,
         group_tier: account.group_tier,
+        external_account_id: account.external_account_id,
+        tenant_id: account.tenant_id,
         account_type: account.account_type,
-        password_changed: input.password !== undefined,
+        password_changed: account.is_demo && input.password !== undefined,
         admin_notes: updatedAdminNotes,
       },
       ip,
@@ -1105,6 +1145,183 @@ export class TradingAccountService {
     );
 
     return account;
+  }
+
+  /**
+   * Admin direct provisioning of a trading account for a client.
+   * Authoritatively creates and maps the account record with status 'active'.
+   */
+  public static async provisionAccountAdmin(
+    adminUserId: string,
+    input: AdminProvisionTradingAccountInput,
+    ip?: string,
+    userAgent?: string
+  ): Promise<TradingAccountRecord> {
+    const pool = getPool();
+    let targetUser: UserRecord | null = null;
+
+    if (pool) {
+      const userRows = await query<UserRecord>(`SELECT * FROM users WHERE id = $1`, [input.user_id]);
+      if (userRows.length === 0) {
+        const err: any = new Error('Target client user not found');
+        err.statusCode = 404;
+        throw err;
+      }
+      targetUser = userRows[0];
+    } else {
+      for (const u of inMemoryDb.users.values()) {
+        if (u.id === input.user_id) {
+          targetUser = u;
+          break;
+        }
+      }
+      if (!targetUser) {
+        const err: any = new Error('Target client user not found');
+        err.statusCode = 404;
+        throw err;
+      }
+    }
+
+    if (targetUser.role !== 'client') {
+      const err: any = new Error('Trading accounts can only be provisioned for client users');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const now = new Date();
+    const accountId = crypto.randomUUID();
+    const accountNumber = input.account_number?.trim() || this.generateAccountNumber(input.is_demo);
+    const defaultServer = input.server_name?.trim() || (input.is_demo ? `${input.platform}-Demo-Server` : `${input.platform}-Real-Server-1`);
+    const initialBalance = input.initial_balance?.trim() || (input.is_demo ? '10000.00' : '0.00');
+    const demoPassword = input.is_demo ? 'Demo@' + Math.floor(1000 + Math.random() * 9000) : null;
+    const terminalUrl = this.resolveDefaultTerminalUrl(input.platform);
+    const currency = (input.currency || 'USD').toUpperCase();
+    const leverage = input.leverage || '1:100';
+    const groupTier = input.group_tier?.trim() || `${input.account_type}_${currency.toLowerCase()}`;
+    const adminNotes = input.admin_notes?.trim() || `Directly provisioned by administrator (${adminUserId})`;
+    const externalAccountId = input.external_account_id?.trim() || null;
+    const nickname = input.nickname?.trim() || null;
+
+    const newAccount: TradingAccountRecord = {
+      id: accountId,
+      account_number: accountNumber,
+      user_id: targetUser.id,
+      platform: input.platform,
+      account_type: input.account_type,
+      server_name: defaultServer,
+      currency,
+      leverage,
+      status: 'active',
+      nickname,
+      is_demo: input.is_demo,
+      group_tier: groupTier,
+      external_account_id: externalAccountId,
+      tenant_id: 'default',
+      investor_notes: null,
+      admin_notes: adminNotes,
+      rejection_reason: null,
+      approved_at: now,
+      approved_by: adminUserId,
+      created_at: now,
+      updated_at: now,
+      password: demoPassword,
+      balance: initialBalance,
+      terminal_url: terminalUrl,
+    };
+
+    if (pool) {
+      const serializedNotes = this.serializeMetadata(newAccount);
+      try {
+        await query(
+          `INSERT INTO trading_accounts 
+           (id, account_number, user_id, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, group_tier, external_account_id, tenant_id, investor_notes, admin_notes, created_at, updated_at, approved_at, approved_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+          [
+            newAccount.id,
+            newAccount.account_number,
+            newAccount.user_id,
+            newAccount.platform,
+            newAccount.account_type,
+            newAccount.server_name,
+            newAccount.currency,
+            newAccount.leverage,
+            newAccount.status,
+            newAccount.nickname,
+            newAccount.is_demo,
+            newAccount.group_tier,
+            newAccount.external_account_id,
+            newAccount.tenant_id,
+            serializedNotes,
+            newAccount.admin_notes,
+            newAccount.created_at,
+            newAccount.updated_at,
+            newAccount.approved_at,
+            newAccount.approved_by,
+          ]
+        );
+      } catch {
+        await query(
+          `INSERT INTO trading_accounts 
+           (id, account_number, user_id, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, group_tier, investor_notes, admin_notes, created_at, updated_at, approved_at, approved_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+          [
+            newAccount.id,
+            newAccount.account_number,
+            newAccount.user_id,
+            newAccount.platform,
+            newAccount.account_type,
+            newAccount.server_name,
+            newAccount.currency,
+            newAccount.leverage,
+            newAccount.status,
+            newAccount.nickname,
+            newAccount.is_demo,
+            newAccount.group_tier,
+            serializedNotes,
+            newAccount.admin_notes,
+            newAccount.created_at,
+            newAccount.updated_at,
+            newAccount.approved_at,
+            newAccount.approved_by,
+          ]
+        );
+      }
+    } else {
+      inMemoryDb.tradingAccounts.set(newAccount.id, { ...newAccount });
+    }
+
+    await this.recordAuditLog(
+      adminUserId,
+      'TRADING_ACCOUNT_PROVISIONED_ADMIN',
+      newAccount.id,
+      {
+        account_id: newAccount.id,
+        account_number: newAccount.account_number,
+        user_id: targetUser.id,
+        user_email: targetUser.email,
+        platform: newAccount.platform,
+        account_type: newAccount.account_type,
+        currency: newAccount.currency,
+        leverage: newAccount.leverage,
+        is_demo: newAccount.is_demo,
+        server_name: newAccount.server_name,
+        group_tier: newAccount.group_tier,
+        external_account_id: newAccount.external_account_id,
+        admin_notes: adminNotes,
+      },
+      ip,
+      userAgent
+    );
+
+    await NotificationService.createNotification(
+      targetUser.id,
+      'Trading Account Provisioned',
+      `An administrator has provisioned a new ${newAccount.is_demo ? 'Demo' : 'Live'} trading account #${newAccount.account_number} (${newAccount.platform}) for you.`,
+      'trading_account',
+      { account_id: newAccount.id, account_number: newAccount.account_number, platform: newAccount.platform }
+    );
+
+    return newAccount;
   }
 
   /**

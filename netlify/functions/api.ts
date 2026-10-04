@@ -45,6 +45,7 @@ import {
   RejectTradingAccountSchema,
   UpdateTradingAccountStatusSchema,
   AdminUpdateTradingAccountMetadataSchema,
+  AdminProvisionTradingAccountSchema,
   KycProfileSchema,
   KycReviewSchema,
   KycDocumentUploadSchema,
@@ -1093,6 +1094,18 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
           };
         }
 
+        // Account status guard: only active or read_only accounts may request an SSO launch session
+        if (account.status !== 'active' && account.status !== 'read_only') {
+          return {
+            statusCode: 403,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              status: 'error',
+              message: `Trading account is not eligible for trading session (status: ${account.status}). Only active accounts may generate SSO launch tokens.`,
+            }),
+          };
+        }
+
         const ssoToken = generateTradingSsoToken(authUser, {
           accountId: account.id,
           accountNumber: account.account_number,
@@ -1148,6 +1161,18 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
             body: JSON.stringify({
               status: 'error',
               message: 'No trading account found or access denied',
+            }),
+          };
+        }
+
+        // Account status guard: only active or read_only accounts may request an SSO launch session
+        if (account.status !== 'active' && account.status !== 'read_only') {
+          return {
+            statusCode: 403,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              status: 'error',
+              message: `Trading account is not eligible for trading session (status: ${account.status}). Only active accounts may generate SSO launch tokens.`,
             }),
           };
         }
@@ -1287,6 +1312,23 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
           statusCode: 200,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: 'success', data: accounts }),
+        };
+      }
+
+      // Admin: POST /api/admin/trading-accounts/provision (Direct admin provisioning)
+      if (path === '/admin/trading-accounts/provision' && event.httpMethod === 'POST') {
+        const body = parseRequestBody(event.body);
+        const validated = AdminProvisionTradingAccountSchema.parse(body);
+        const account = await TradingAccountService.provisionAccountAdmin(
+          authUser.id,
+          validated,
+          clientIp,
+          userAgent
+        );
+        return {
+          statusCode: 201,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'success', data: account }),
         };
       }
 

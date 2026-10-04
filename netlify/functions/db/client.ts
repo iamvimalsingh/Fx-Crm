@@ -148,6 +148,8 @@ export interface TradingAccountRecord {
   nickname?: string | null;
   is_demo: boolean;
   group_tier?: string | null;
+  external_account_id?: string | null;
+  tenant_id?: string;
   investor_notes?: string | null;
   admin_notes?: string | null;
   rejection_reason?: string | null;

@@ -47374,7 +47374,14 @@ var JwtConfigurationError = class extends Error {
     this.name = "JwtConfigurationError";
   }
 };
+var CrmLaunchSecretConfigurationError = class extends Error {
+  constructor(message = "CRM_LAUNCH_SECRET is not configured. Trading launch token issuance cannot proceed.") {
+    super(message);
+    this.name = "CrmLaunchSecretConfigurationError";
+  }
+};
 var JWT_EXPIRES_IN = "7d";
+var TRADING_LAUNCH_TOKEN_EXPIRES_IN = "5m";
 function getJwtSecret() {
   const rawSecret = process.env.JWT_SECRET;
   const isProd = process.env.NODE_ENV === "production" || process.env.APP_ENV === "production" || process.env.NETLIFY === "true" || process.env.CONTEXT === "production";
@@ -47396,6 +47403,42 @@ function getJwtSecret() {
   }
   return rawSecret;
 }
+function getCrmLaunchSecret() {
+  const rawSecret = process.env.CRM_LAUNCH_SECRET;
+  const isProd = process.env.NODE_ENV === "production" || process.env.APP_ENV === "production" || process.env.NETLIFY === "true" || process.env.CONTEXT === "production";
+  if (!rawSecret || rawSecret.trim() === "") {
+    if (isProd) {
+      throw new CrmLaunchSecretConfigurationError(
+        "CRM_LAUNCH_SECRET is not configured in production environment. Trading launch token issuance is disabled."
+      );
+    }
+    if (process.env.NODE_ENV === "test" || process.env.CRM_TEST_MODE === "true" || process.env.NODE_ENV === "development") {
+      return "test_only_crm_launch_secret_distinct_from_jwt_secret_32chars!";
+    }
+    throw new CrmLaunchSecretConfigurationError("CRM_LAUNCH_SECRET is required.");
+  }
+  if (isProd && rawSecret.length < 32) {
+    throw new CrmLaunchSecretConfigurationError(
+      "CRM_LAUNCH_SECRET must be at least 32 characters in production to guarantee cryptographic security."
+    );
+  }
+  return rawSecret;
+}
+function parseNumericLeverage(raw) {
+  if (typeof raw === "number" && !isNaN(raw) && raw > 0) {
+    return raw;
+  }
+  if (typeof raw === "string") {
+    const cleaned = raw.trim();
+    if (cleaned.startsWith("1:")) {
+      const parsed2 = parseInt(cleaned.slice(2), 10);
+      if (!isNaN(parsed2) && parsed2 > 0) return parsed2;
+    }
+    const parsed = parseInt(cleaned, 10);
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return 100;
+}
 function generateToken(user) {
   const secret = getJwtSecret();
   const payload = {
@@ -47404,6 +47447,52 @@ function generateToken(user) {
     role: user.role
   };
   return import_jsonwebtoken.default.sign(payload, secret, { expiresIn: JWT_EXPIRES_IN });
+}
+function generateTradingLaunchToken(user, account, tenantId = "default") {
+  const secret = getCrmLaunchSecret();
+  const numericLeverage = parseNumericLeverage(account.leverage);
+  const parsedBalance = account.balance !== void 0 && account.balance !== null ? parseFloat(String(account.balance)) : void 0;
+  const canonicalBalance = parsedBalance !== void 0 && !isNaN(parsedBalance) ? parsedBalance : 0;
+  const initialBalNum = canonicalBalance;
+  const payload = {
+    // Canonical required claims
+    iss: "crm-backend",
+    sub: String(user.id),
+    aud: "trading-terminal",
+    accountId: account.id,
+    accountNumber: account.account_number,
+    tenantId: tenantId || "default",
+    // Optional supported claims
+    platform: account.platform || "MT5",
+    currency: account.currency || "USD",
+    accountType: account.account_type || "standard",
+    leverage: numericLeverage,
+    balance: canonicalBalance,
+    initialBalance: initialBalNum,
+    // Backward-compatible claims for verified existing consumers
+    clientId: String(user.id),
+    userId: String(user.id),
+    serverName: account.server_name || void 0,
+    email: user.email,
+    type: "trading_session"
+  };
+  return import_jsonwebtoken.default.sign(payload, secret, { expiresIn: TRADING_LAUNCH_TOKEN_EXPIRES_IN });
+}
+function generateTradingSsoToken(user, accountInfo, tenantId = "default") {
+  return generateTradingLaunchToken(
+    user,
+    {
+      id: accountInfo?.accountId || "default",
+      account_number: accountInfo?.accountNumber || "default",
+      server_name: accountInfo?.serverName,
+      currency: accountInfo?.currency,
+      platform: accountInfo?.platform,
+      account_type: accountInfo?.accountType,
+      leverage: accountInfo?.leverage,
+      balance: accountInfo?.balance
+    },
+    tenantId
+  );
 }
 function verifyToken(token) {
   try {
@@ -47685,21 +47774,26 @@ var TradingAccountService = class {
    * Safely decodes and hydrates a raw DB row or in-memory record into a full TradingAccountRecord
    */
   static hydrateAccountRecord(row) {
-    let demoPassword = row.password || null;
-    let demoBalance = row.balance !== void 0 && row.balance !== null ? String(row.balance) : row.is_demo ? "10000.00" : "0.00";
+    const isDemo = Boolean(row.is_demo);
+    let demoPassword = isDemo ? row.password || null : null;
+    let demoBalance = row.balance !== void 0 && row.balance !== null ? String(row.balance) : isDemo ? "10000.00" : "0.00";
     let terminalUrl = row.terminal_url || null;
     let cleanInvestorNotes = row.investor_notes || null;
+    let externalAccountId = row.external_account_id || null;
+    let tenantId = row.tenant_id || "default";
     if (row.investor_notes && typeof row.investor_notes === "string" && row.investor_notes.startsWith("{")) {
       try {
         const meta3 = JSON.parse(row.investor_notes);
-        if (meta3.password !== void 0) demoPassword = meta3.password;
+        if (isDemo && meta3.password !== void 0) demoPassword = meta3.password;
         if (meta3.balance !== void 0) demoBalance = meta3.balance;
         if (meta3.terminal_url !== void 0) terminalUrl = meta3.terminal_url;
+        if (meta3.external_account_id !== void 0) externalAccountId = meta3.external_account_id;
+        if (meta3.tenant_id !== void 0) tenantId = meta3.tenant_id;
         if (meta3.notes !== void 0) cleanInvestorNotes = meta3.notes;
       } catch {
       }
     }
-    if (row.is_demo) {
+    if (isDemo) {
       if (!demoBalance || demoBalance === "0" || demoBalance === "0.00") {
         demoBalance = "10000.00";
       }
@@ -47721,8 +47815,10 @@ var TradingAccountService = class {
       leverage: row.leverage,
       status: row.status,
       nickname: row.nickname || null,
-      is_demo: Boolean(row.is_demo),
+      is_demo: isDemo,
       group_tier: row.group_tier || null,
+      external_account_id: externalAccountId,
+      tenant_id: tenantId,
       investor_notes: cleanInvestorNotes,
       admin_notes: row.admin_notes || null,
       rejection_reason: row.rejection_reason || null,
@@ -47730,7 +47826,8 @@ var TradingAccountService = class {
       approved_by: row.approved_by || null,
       created_at: new Date(row.created_at),
       updated_at: new Date(row.updated_at),
-      password: demoPassword,
+      password: isDemo ? demoPassword : null,
+      // Plaintext passwords are NEVER stored or returned for live accounts
       balance: demoBalance,
       terminal_url: terminalUrl
     };
@@ -48448,10 +48545,12 @@ var TradingAccountService = class {
     const updatedStatus = input2.status || account.status;
     const updatedTerminalUrl = input2.terminal_url !== void 0 ? input2.terminal_url?.trim() || null : account.terminal_url || null;
     const updatedGroupTier = input2.group_tier !== void 0 ? input2.group_tier?.trim() || null : account.group_tier;
+    const updatedExternalAccountId = input2.external_account_id !== void 0 ? input2.external_account_id?.trim() || null : account.external_account_id || null;
+    const updatedTenantId = input2.tenant_id !== void 0 ? input2.tenant_id?.trim() || "default" : account.tenant_id || "default";
     const updatedType = input2.account_type || account.account_type;
     const updatedAdminNotes = input2.admin_notes !== void 0 ? input2.admin_notes?.trim() || null : account.admin_notes;
     const updatedNickname = input2.nickname !== void 0 ? input2.nickname?.trim() || null : account.nickname;
-    const updatedPassword = input2.password !== void 0 ? input2.password?.trim() || null : account.password;
+    const updatedPassword = account.is_demo && input2.password !== void 0 ? input2.password?.trim() || null : account.is_demo ? account.password : null;
     account.account_number = updatedAccountNumber;
     account.platform = updatedPlatform;
     account.server_name = updatedServer;
@@ -48461,6 +48560,8 @@ var TradingAccountService = class {
     account.status = updatedStatus;
     account.terminal_url = updatedTerminalUrl;
     account.group_tier = updatedGroupTier;
+    account.external_account_id = updatedExternalAccountId;
+    account.tenant_id = updatedTenantId;
     account.account_type = updatedType;
     account.admin_notes = updatedAdminNotes;
     account.nickname = updatedNickname;
@@ -48469,26 +48570,51 @@ var TradingAccountService = class {
     const pool2 = getPool();
     if (pool2) {
       const serializedNotes = this.serializeMetadata(account);
-      await query(
-        `UPDATE trading_accounts 
-         SET account_number = $1, platform = $2, server_name = $3, currency = $4, leverage = $5, status = $6, group_tier = $7, account_type = $8, admin_notes = $9, nickname = $10, investor_notes = $11, updated_at = $12
-         WHERE id = $13`,
-        [
-          updatedAccountNumber,
-          updatedPlatform,
-          updatedServer,
-          updatedCurrency,
-          updatedLeverage,
-          updatedStatus,
-          updatedGroupTier,
-          updatedType,
-          updatedAdminNotes,
-          updatedNickname,
-          serializedNotes,
-          now,
-          accountId
-        ]
-      );
+      try {
+        await query(
+          `UPDATE trading_accounts 
+           SET account_number = $1, platform = $2, server_name = $3, currency = $4, leverage = $5, status = $6, group_tier = $7, external_account_id = $8, tenant_id = $9, account_type = $10, admin_notes = $11, nickname = $12, investor_notes = $13, updated_at = $14
+           WHERE id = $15`,
+          [
+            updatedAccountNumber,
+            updatedPlatform,
+            updatedServer,
+            updatedCurrency,
+            updatedLeverage,
+            updatedStatus,
+            updatedGroupTier,
+            updatedExternalAccountId,
+            updatedTenantId,
+            updatedType,
+            updatedAdminNotes,
+            updatedNickname,
+            serializedNotes,
+            now,
+            accountId
+          ]
+        );
+      } catch {
+        await query(
+          `UPDATE trading_accounts 
+           SET account_number = $1, platform = $2, server_name = $3, currency = $4, leverage = $5, status = $6, group_tier = $7, account_type = $8, admin_notes = $9, nickname = $10, investor_notes = $11, updated_at = $12
+           WHERE id = $13`,
+          [
+            updatedAccountNumber,
+            updatedPlatform,
+            updatedServer,
+            updatedCurrency,
+            updatedLeverage,
+            updatedStatus,
+            updatedGroupTier,
+            updatedType,
+            updatedAdminNotes,
+            updatedNickname,
+            serializedNotes,
+            now,
+            accountId
+          ]
+        );
+      }
     } else {
       const record2 = inMemoryDb.tradingAccounts.get(accountId);
       if (record2) {
@@ -48509,14 +48635,179 @@ var TradingAccountService = class {
         status: account.status,
         terminal_url: account.terminal_url,
         group_tier: account.group_tier,
+        external_account_id: account.external_account_id,
+        tenant_id: account.tenant_id,
         account_type: account.account_type,
-        password_changed: input2.password !== void 0,
+        password_changed: account.is_demo && input2.password !== void 0,
         admin_notes: updatedAdminNotes
       },
       ip,
       userAgent
     );
     return account;
+  }
+  /**
+   * Admin direct provisioning of a trading account for a client.
+   * Authoritatively creates and maps the account record with status 'active'.
+   */
+  static async provisionAccountAdmin(adminUserId, input2, ip, userAgent) {
+    const pool2 = getPool();
+    let targetUser = null;
+    if (pool2) {
+      const userRows = await query(`SELECT * FROM users WHERE id = $1`, [input2.user_id]);
+      if (userRows.length === 0) {
+        const err = new Error("Target client user not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      targetUser = userRows[0];
+    } else {
+      for (const u of inMemoryDb.users.values()) {
+        if (u.id === input2.user_id) {
+          targetUser = u;
+          break;
+        }
+      }
+      if (!targetUser) {
+        const err = new Error("Target client user not found");
+        err.statusCode = 404;
+        throw err;
+      }
+    }
+    if (targetUser.role !== "client") {
+      const err = new Error("Trading accounts can only be provisioned for client users");
+      err.statusCode = 400;
+      throw err;
+    }
+    const now = /* @__PURE__ */ new Date();
+    const accountId = crypto4.randomUUID();
+    const accountNumber = input2.account_number?.trim() || this.generateAccountNumber(input2.is_demo);
+    const defaultServer = input2.server_name?.trim() || (input2.is_demo ? `${input2.platform}-Demo-Server` : `${input2.platform}-Real-Server-1`);
+    const initialBalance = input2.initial_balance?.trim() || (input2.is_demo ? "10000.00" : "0.00");
+    const demoPassword = input2.is_demo ? "Demo@" + Math.floor(1e3 + Math.random() * 9e3) : null;
+    const terminalUrl = this.resolveDefaultTerminalUrl(input2.platform);
+    const currency = (input2.currency || "USD").toUpperCase();
+    const leverage = input2.leverage || "1:100";
+    const groupTier = input2.group_tier?.trim() || `${input2.account_type}_${currency.toLowerCase()}`;
+    const adminNotes = input2.admin_notes?.trim() || `Directly provisioned by administrator (${adminUserId})`;
+    const externalAccountId = input2.external_account_id?.trim() || null;
+    const nickname = input2.nickname?.trim() || null;
+    const newAccount = {
+      id: accountId,
+      account_number: accountNumber,
+      user_id: targetUser.id,
+      platform: input2.platform,
+      account_type: input2.account_type,
+      server_name: defaultServer,
+      currency,
+      leverage,
+      status: "active",
+      nickname,
+      is_demo: input2.is_demo,
+      group_tier: groupTier,
+      external_account_id: externalAccountId,
+      tenant_id: "default",
+      investor_notes: null,
+      admin_notes: adminNotes,
+      rejection_reason: null,
+      approved_at: now,
+      approved_by: adminUserId,
+      created_at: now,
+      updated_at: now,
+      password: demoPassword,
+      balance: initialBalance,
+      terminal_url: terminalUrl
+    };
+    if (pool2) {
+      const serializedNotes = this.serializeMetadata(newAccount);
+      try {
+        await query(
+          `INSERT INTO trading_accounts 
+           (id, account_number, user_id, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, group_tier, external_account_id, tenant_id, investor_notes, admin_notes, created_at, updated_at, approved_at, approved_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+          [
+            newAccount.id,
+            newAccount.account_number,
+            newAccount.user_id,
+            newAccount.platform,
+            newAccount.account_type,
+            newAccount.server_name,
+            newAccount.currency,
+            newAccount.leverage,
+            newAccount.status,
+            newAccount.nickname,
+            newAccount.is_demo,
+            newAccount.group_tier,
+            newAccount.external_account_id,
+            newAccount.tenant_id,
+            serializedNotes,
+            newAccount.admin_notes,
+            newAccount.created_at,
+            newAccount.updated_at,
+            newAccount.approved_at,
+            newAccount.approved_by
+          ]
+        );
+      } catch {
+        await query(
+          `INSERT INTO trading_accounts 
+           (id, account_number, user_id, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, group_tier, investor_notes, admin_notes, created_at, updated_at, approved_at, approved_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+          [
+            newAccount.id,
+            newAccount.account_number,
+            newAccount.user_id,
+            newAccount.platform,
+            newAccount.account_type,
+            newAccount.server_name,
+            newAccount.currency,
+            newAccount.leverage,
+            newAccount.status,
+            newAccount.nickname,
+            newAccount.is_demo,
+            newAccount.group_tier,
+            serializedNotes,
+            newAccount.admin_notes,
+            newAccount.created_at,
+            newAccount.updated_at,
+            newAccount.approved_at,
+            newAccount.approved_by
+          ]
+        );
+      }
+    } else {
+      inMemoryDb.tradingAccounts.set(newAccount.id, { ...newAccount });
+    }
+    await this.recordAuditLog(
+      adminUserId,
+      "TRADING_ACCOUNT_PROVISIONED_ADMIN",
+      newAccount.id,
+      {
+        account_id: newAccount.id,
+        account_number: newAccount.account_number,
+        user_id: targetUser.id,
+        user_email: targetUser.email,
+        platform: newAccount.platform,
+        account_type: newAccount.account_type,
+        currency: newAccount.currency,
+        leverage: newAccount.leverage,
+        is_demo: newAccount.is_demo,
+        server_name: newAccount.server_name,
+        group_tier: newAccount.group_tier,
+        external_account_id: newAccount.external_account_id,
+        admin_notes: adminNotes
+      },
+      ip,
+      userAgent
+    );
+    await NotificationService.createNotification(
+      targetUser.id,
+      "Trading Account Provisioned",
+      `An administrator has provisioned a new ${newAccount.is_demo ? "Demo" : "Live"} trading account #${newAccount.account_number} (${newAccount.platform}) for you.`,
+      "trading_account",
+      { account_id: newAccount.id, account_number: newAccount.account_number, platform: newAccount.platform }
+    );
+    return newAccount;
   }
   /**
    * Updates balance of a trading account (used by financial transfer approval workflow)
@@ -75973,7 +76264,24 @@ var AdminUpdateTradingAccountMetadataSchema = external_exports.object({
   status: external_exports.enum(["pending_approval", "active", "read_only", "disabled", "archived"]).optional(),
   terminal_url: external_exports.string().max(500).optional().nullable(),
   group_tier: external_exports.string().max(100).optional().nullable(),
+  external_account_id: external_exports.string().max(100).optional().nullable(),
+  tenant_id: external_exports.string().max(50).optional().nullable(),
   account_type: external_exports.enum(["standard", "raw_spread", "pro", "islamic"]).optional(),
+  admin_notes: external_exports.string().max(500).optional().nullable(),
+  nickname: external_exports.string().max(100).optional().nullable()
+});
+var AdminProvisionTradingAccountSchema = external_exports.object({
+  user_id: external_exports.string().min(1, "User ID is required"),
+  platform: external_exports.enum(["MT4", "MT5", "cTrader", "WebTrader"]).default("MT5"),
+  account_type: external_exports.enum(["standard", "raw_spread", "pro", "islamic"]).default("standard"),
+  currency: external_exports.string().trim().min(3).max(10).default("USD"),
+  leverage: external_exports.string().trim().min(1).max(20).default("1:100"),
+  is_demo: external_exports.boolean().default(false),
+  group_tier: external_exports.string().max(100).optional().nullable(),
+  initial_balance: external_exports.string().max(30).optional().nullable(),
+  server_name: external_exports.string().max(100).optional().nullable(),
+  external_account_id: external_exports.string().max(100).optional().nullable(),
+  account_number: external_exports.string().max(50).optional().nullable(),
   admin_notes: external_exports.string().max(500).optional().nullable(),
   nickname: external_exports.string().max(100).optional().nullable()
 });
@@ -76088,6 +76396,9 @@ var handler = async (event, context) => {
     };
   }
   let path2 = event.path.replace(/^\/\.netlify\/functions\/api/, "").replace(/^(\/api)+/, "");
+  if (path2.startsWith("/v1/") || path2 === "/v1") {
+    path2 = path2.replace(/^\/v1/, "");
+  }
   if (!path2.startsWith("/")) {
     path2 = "/" + path2;
   }
@@ -76194,6 +76505,37 @@ var handler = async (event, context) => {
         statusCode: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
         body: JSON.stringify({ status: "success", message: "Logged out successfully" })
+      };
+    }
+    if (path2 === "/auth/refresh" && event.httpMethod === "POST") {
+      const authHeader2 = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader2);
+      if (!user) {
+        return {
+          statusCode: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "error", message: "Unauthorized. Please log in." })
+        };
+      }
+      const newToken = generateToken(user);
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          status: "success",
+          data: {
+            token: newToken,
+            user: {
+              id: user.id,
+              email: user.email,
+              role: user.role,
+              status: user.status,
+              first_name: user.first_name,
+              last_name: user.last_name,
+              preferred_currency: user.preferred_currency
+            }
+          }
+        })
       };
     }
     if (path2 === "/auth/forgot-password" && event.httpMethod === "POST") {
@@ -76830,6 +77172,140 @@ var handler = async (event, context) => {
           body: JSON.stringify({ status: "success", data: accounts })
         };
       }
+      if (path2 === "/trading-accounts/sso-token" && (event.httpMethod === "POST" || event.httpMethod === "GET")) {
+        let accountId = event.queryStringParameters?.account_id || event.queryStringParameters?.accountId;
+        if (!accountId && event.body) {
+          try {
+            const body = parseRequestBody(event.body);
+            accountId = body.account_id || body.accountId;
+          } catch {
+          }
+        }
+        let account = null;
+        if (accountId && accountId !== "default") {
+          account = await TradingAccountService.getUserAccountById(authUser.id, accountId);
+        } else {
+          const accounts = await TradingAccountService.getUserAccounts(authUser.id);
+          account = accounts.find((a5) => a5.status === "active") || accounts[0] || null;
+        }
+        if (!account) {
+          return {
+            statusCode: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              status: "error",
+              message: "No trading account found for user"
+            })
+          };
+        }
+        if (account.status !== "active" && account.status !== "read_only") {
+          return {
+            statusCode: 403,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              status: "error",
+              message: `Trading account is not eligible for trading session (status: ${account.status}). Only active accounts may generate SSO launch tokens.`
+            })
+          };
+        }
+        const ssoToken = generateTradingSsoToken(authUser, {
+          accountId: account.id,
+          accountNumber: account.account_number,
+          serverName: account.server_name,
+          currency: account.currency,
+          platform: account.platform,
+          accountType: account.account_type,
+          leverage: account.leverage,
+          balance: account.balance
+        });
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            status: "success",
+            data: {
+              token: ssoToken,
+              account: {
+                id: account.id,
+                account_number: account.account_number,
+                platform: account.platform,
+                server_name: account.server_name,
+                currency: account.currency,
+                account_type: account.account_type,
+                balance: account.balance,
+                equity: account.equity,
+                leverage: account.leverage,
+                status: account.status
+              },
+              terminal_url: account && account.terminal_url || process.env.VITE_TRADING_PLATFORM_URL || "https://trading-platform-two-mu.vercel.app"
+            }
+          })
+        };
+      }
+      const ssoMatch = path2.match(/^\/trading-accounts\/([^/]+)\/sso-token$/);
+      if (ssoMatch && (event.httpMethod === "POST" || event.httpMethod === "GET")) {
+        const accountId = ssoMatch[1];
+        let account = null;
+        if (accountId !== "default") {
+          account = await TradingAccountService.getUserAccountById(authUser.id, accountId);
+        } else {
+          const accounts = await TradingAccountService.getUserAccounts(authUser.id);
+          account = accounts.find((a5) => a5.status === "active") || accounts[0] || null;
+        }
+        if (!account) {
+          return {
+            statusCode: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              status: "error",
+              message: "No trading account found or access denied"
+            })
+          };
+        }
+        if (account.status !== "active" && account.status !== "read_only") {
+          return {
+            statusCode: 403,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              status: "error",
+              message: `Trading account is not eligible for trading session (status: ${account.status}). Only active accounts may generate SSO launch tokens.`
+            })
+          };
+        }
+        const ssoToken = generateTradingSsoToken(authUser, {
+          accountId: account.id,
+          accountNumber: account.account_number,
+          serverName: account.server_name,
+          currency: account.currency,
+          platform: account.platform,
+          accountType: account.account_type,
+          leverage: account.leverage,
+          balance: account.balance
+        });
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            status: "success",
+            data: {
+              token: ssoToken,
+              account: {
+                id: account.id,
+                account_number: account.account_number,
+                platform: account.platform,
+                server_name: account.server_name,
+                currency: account.currency,
+                account_type: account.account_type,
+                balance: account.balance,
+                equity: account.equity,
+                leverage: account.leverage,
+                status: account.status
+              },
+              terminal_url: account && account.terminal_url || process.env.VITE_TRADING_PLATFORM_URL || "https://trading-platform-two-mu.vercel.app"
+            }
+          })
+        };
+      }
       if (path2 === "/trading-accounts/register" && event.httpMethod === "POST") {
         const body = parseRequestBody(event.body);
         const validated = RegisterTradingAccountSchema.parse(body);
@@ -76918,6 +77394,21 @@ var handler = async (event, context) => {
           statusCode: 200,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
           body: JSON.stringify({ status: "success", data: accounts })
+        };
+      }
+      if (path2 === "/admin/trading-accounts/provision" && event.httpMethod === "POST") {
+        const body = parseRequestBody(event.body);
+        const validated = AdminProvisionTradingAccountSchema.parse(body);
+        const account = await TradingAccountService.provisionAccountAdmin(
+          authUser.id,
+          validated,
+          clientIp,
+          userAgent
+        );
+        return {
+          statusCode: 201,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "success", data: account })
         };
       }
       const approveMatch = path2.match(/^\/admin\/trading-accounts\/([^/]+)\/approve$/);
@@ -77480,6 +77971,17 @@ var handler = async (event, context) => {
         body: JSON.stringify({
           status: "error",
           code: "JWT_CONFIGURATION_ERROR",
+          message: error63.message
+        })
+      };
+    }
+    if (error63 instanceof CrmLaunchSecretConfigurationError || error63.name === "CrmLaunchSecretConfigurationError") {
+      return {
+        statusCode: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          status: "error",
+          code: "CRM_LAUNCH_SECRET_CONFIGURATION_ERROR",
           message: error63.message
         })
       };

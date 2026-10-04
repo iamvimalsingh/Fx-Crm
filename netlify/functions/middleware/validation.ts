@@ -233,7 +233,25 @@ export const AdminUpdateTradingAccountMetadataSchema = z.object({
   status: z.enum(['pending_approval', 'active', 'read_only', 'disabled', 'archived']).optional(),
   terminal_url: z.string().max(500).optional().nullable(),
   group_tier: z.string().max(100).optional().nullable(),
+  external_account_id: z.string().max(100).optional().nullable(),
+  tenant_id: z.string().max(50).optional().nullable(),
   account_type: z.enum(['standard', 'raw_spread', 'pro', 'islamic']).optional(),
+  admin_notes: z.string().max(500).optional().nullable(),
+  nickname: z.string().max(100).optional().nullable(),
+});
+
+export const AdminProvisionTradingAccountSchema = z.object({
+  user_id: z.string().min(1, 'User ID is required'),
+  platform: z.enum(['MT4', 'MT5', 'cTrader', 'WebTrader']).default('MT5'),
+  account_type: z.enum(['standard', 'raw_spread', 'pro', 'islamic']).default('standard'),
+  currency: z.string().trim().min(3).max(10).default('USD'),
+  leverage: z.string().trim().min(1).max(20).default('1:100'),
+  is_demo: z.boolean().default(false),
+  group_tier: z.string().max(100).optional().nullable(),
+  initial_balance: z.string().max(30).optional().nullable(),
+  server_name: z.string().max(100).optional().nullable(),
+  external_account_id: z.string().max(100).optional().nullable(),
+  account_number: z.string().max(50).optional().nullable(),
   admin_notes: z.string().max(500).optional().nullable(),
   nickname: z.string().max(100).optional().nullable(),
 });
@@ -246,6 +264,7 @@ export type ApproveTradingAccountInput = z.infer<typeof ApproveTradingAccountSch
 export type RejectTradingAccountInput = z.infer<typeof RejectTradingAccountSchema>;
 export type UpdateTradingAccountStatusInput = z.infer<typeof UpdateTradingAccountStatusSchema>;
 export type AdminUpdateTradingAccountMetadataInput = z.infer<typeof AdminUpdateTradingAccountMetadataSchema>;
+export type AdminProvisionTradingAccountInput = z.infer<typeof AdminProvisionTradingAccountSchema>;
 
 // --- KYC Schemas ---
 export const KycProfileSchema = z.object({

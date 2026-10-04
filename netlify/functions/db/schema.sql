@@ -185,6 +185,8 @@ CREATE TABLE IF NOT EXISTS trading_accounts (
     is_demo BOOLEAN NOT NULL DEFAULT false,
     group_tier VARCHAR(100),
     password VARCHAR(255),
+    external_account_id VARCHAR(100),
+    tenant_id VARCHAR(50) NOT NULL DEFAULT 'default',
     balance NUMERIC(15,2) DEFAULT 0.00,
     terminal_url TEXT,
     investor_notes TEXT,
@@ -200,6 +202,8 @@ CREATE INDEX IF NOT EXISTS idx_trading_accounts_user_id ON trading_accounts(user
 CREATE INDEX IF NOT EXISTS idx_trading_accounts_account_number ON trading_accounts(account_number);
 CREATE INDEX IF NOT EXISTS idx_trading_accounts_status ON trading_accounts(status);
 CREATE INDEX IF NOT EXISTS idx_trading_accounts_platform ON trading_accounts(platform);
+CREATE INDEX IF NOT EXISTS idx_trading_accounts_user_status ON trading_accounts(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_trading_accounts_external_id ON trading_accounts(external_account_id);
 
 -- 10. KYC Profiles Table
 CREATE TABLE IF NOT EXISTS kyc_profiles (
