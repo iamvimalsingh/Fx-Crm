@@ -94,21 +94,50 @@ export interface TokenPayload {
 }
 
 export interface TradingLaunchTokenPayload {
+  // Canonical required claims
+  iss: 'crm-backend';
+  sub: string;
+  aud: 'trading-terminal';
   accountId: string;
   accountNumber: string;
-  clientId: string;
-  userId: string;
   tenantId: string;
+
+  // Optional supported claims
   platform: string;
   currency: string;
   accountType: string;
-  leverage: string;
+  leverage: number;
+  initialBalance?: number;
+  balance?: number;
+
+  // Backward-compatible claims for existing consumers
+  clientId: string;
+  userId: string;
   serverName?: string;
   email?: string;
   type: 'trading_session';
+
+  iat?: number;
+  exp?: number;
 }
 
 export type TradingSsoTokenPayload = TradingLaunchTokenPayload;
+
+export function parseNumericLeverage(raw: string | number | null | undefined): number {
+  if (typeof raw === 'number' && !isNaN(raw) && raw > 0) {
+    return raw;
+  }
+  if (typeof raw === 'string') {
+    const cleaned = raw.trim();
+    if (cleaned.startsWith('1:')) {
+      const parsed = parseInt(cleaned.slice(2), 10);
+      if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
+    const parsed = parseInt(cleaned, 10);
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return 100;
+}
 
 export function generateToken(user: Pick<UserRecord, 'id' | 'email' | 'role'>): string {
   const secret = getJwtSecret();
@@ -129,25 +158,46 @@ export function generateTradingLaunchToken(
     currency?: string | null;
     platform?: string | null;
     account_type?: string | null;
-    leverage?: string | null;
+    leverage?: string | number | null;
+    balance?: string | number | null;
   },
   tenantId: string = 'default'
 ): string {
   const secret = getCrmLaunchSecret();
+  const numericLeverage = parseNumericLeverage(account.leverage);
+  const parsedBalance =
+    account.balance !== undefined && account.balance !== null
+      ? parseFloat(String(account.balance))
+      : undefined;
+  const canonicalBalance =
+    parsedBalance !== undefined && !isNaN(parsedBalance) ? parsedBalance : 0;
+  const initialBalNum = canonicalBalance;
+
   const payload: TradingLaunchTokenPayload = {
+    // Canonical required claims
+    iss: 'crm-backend',
+    sub: String(user.id),
+    aud: 'trading-terminal',
     accountId: account.id,
     accountNumber: account.account_number,
-    clientId: String(user.id),
-    userId: String(user.id),
     tenantId: tenantId || 'default',
+
+    // Optional supported claims
     platform: account.platform || 'MT5',
     currency: account.currency || 'USD',
     accountType: account.account_type || 'standard',
-    leverage: account.leverage || '1:100',
+    leverage: numericLeverage,
+    balance: canonicalBalance,
+    initialBalance: initialBalNum,
+
+    // Backward-compatible claims for verified existing consumers
+    clientId: String(user.id),
+    userId: String(user.id),
     serverName: account.server_name || undefined,
     email: user.email,
     type: 'trading_session',
   };
+
   return jwt.sign(payload, secret, { expiresIn: TRADING_LAUNCH_TOKEN_EXPIRES_IN });
 }
 
@@ -160,7 +210,8 @@ export function generateTradingSsoToken(
     currency?: string;
     platform?: string;
     accountType?: string;
-    leverage?: string;
+    leverage?: string | number | null;
+    balance?: string | number | null;
   },
   tenantId: string = 'default'
 ): string {
@@ -174,6 +225,7 @@ export function generateTradingSsoToken(
       platform: accountInfo?.platform,
       account_type: accountInfo?.accountType,
       leverage: accountInfo?.leverage,
+      balance: accountInfo?.balance,
     },
     tenantId
   );

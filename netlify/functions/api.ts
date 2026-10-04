@@ -8,6 +8,7 @@ import { NotificationService } from './services/notification.service';
 import { StorageService } from './services/storage.service';
 import {
   authenticateRequest,
+  generateToken,
   JwtConfigurationError,
   CrmLaunchSecretConfigurationError,
   generateTradingLaunchToken,
@@ -83,6 +84,11 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
 
   // Parse path (normalizes /.netlify/functions/api/..., /api/..., or duplicate /api/api/...)
   let path = event.path.replace(/^\/\.netlify\/functions\/api/, '').replace(/^(\/api)+/, '');
+
+  // Transparent /v1 API versioning prefix support for mobile/external clients
+  if (path.startsWith('/v1/') || path === '/v1') {
+    path = path.replace(/^\/v1/, '');
+  }
   if (!path.startsWith('/')) {
     path = '/' + path;
   }
@@ -229,6 +235,41 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
         statusCode: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'success', message: 'Logged out successfully' }),
+      };
+    }
+
+    // -------------------------------------------------------------------------
+    // POST /api/auth/refresh (Protected - refresh active JWT session)
+    // -------------------------------------------------------------------------
+    if (path === '/auth/refresh' && event.httpMethod === 'POST') {
+      const authHeader = event.headers.authorization || event.headers.Authorization;
+      const user = await authenticateRequest(authHeader);
+      if (!user) {
+        return {
+          statusCode: 401,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'error', message: 'Unauthorized. Please log in.' }),
+        };
+      }
+      const newToken = generateToken(user);
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'success',
+          data: {
+            token: newToken,
+            user: {
+              id: user.id,
+              email: user.email,
+              role: user.role,
+              status: user.status,
+              first_name: user.first_name,
+              last_name: user.last_name,
+              preferred_currency: user.preferred_currency,
+            },
+          },
+        }),
       };
     }
 
@@ -1041,7 +1082,18 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
           account = accounts.find((a: any) => a.status === 'active') || accounts[0] || null;
         }
 
-        const ssoToken = generateTradingSsoToken(authUser, account ? {
+        if (!account) {
+          return {
+            statusCode: 404,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              status: 'error',
+              message: 'No trading account found for user',
+            }),
+          };
+        }
+
+        const ssoToken = generateTradingSsoToken(authUser, {
           accountId: account.id,
           accountNumber: account.account_number,
           serverName: account.server_name,
@@ -1049,7 +1101,8 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
           platform: account.platform,
           accountType: account.account_type,
           leverage: account.leverage,
-        } : undefined);
+          balance: account.balance,
+        });
 
         return {
           statusCode: 200,
@@ -1058,7 +1111,7 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
             status: 'success',
             data: {
               token: ssoToken,
-              account: account ? {
+              account: {
                 id: account.id,
                 account_number: account.account_number,
                 platform: account.platform,
@@ -1069,7 +1122,7 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
                 equity: account.equity,
                 leverage: account.leverage,
                 status: account.status,
-              } : null,
+              },
               terminal_url: (account && account.terminal_url) || process.env.VITE_TRADING_PLATFORM_URL || 'https://trading-platform-two-mu.vercel.app',
             },
           }),
@@ -1083,8 +1136,23 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
         let account: any = null;
         if (accountId !== 'default') {
           account = await TradingAccountService.getUserAccountById(authUser.id, accountId);
+        } else {
+          const accounts = await TradingAccountService.getUserAccounts(authUser.id);
+          account = accounts.find((a: any) => a.status === 'active') || accounts[0] || null;
         }
-        const ssoToken = generateTradingSsoToken(authUser, account ? {
+
+        if (!account) {
+          return {
+            statusCode: 404,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              status: 'error',
+              message: 'No trading account found or access denied',
+            }),
+          };
+        }
+
+        const ssoToken = generateTradingSsoToken(authUser, {
           accountId: account.id,
           accountNumber: account.account_number,
           serverName: account.server_name,
@@ -1092,7 +1160,8 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
           platform: account.platform,
           accountType: account.account_type,
           leverage: account.leverage,
-        } : undefined);
+          balance: account.balance,
+        });
 
         return {
           statusCode: 200,
@@ -1101,7 +1170,7 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
             status: 'success',
             data: {
               token: ssoToken,
-              account: account ? {
+              account: {
                 id: account.id,
                 account_number: account.account_number,
                 platform: account.platform,
@@ -1112,7 +1181,7 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
                 equity: account.equity,
                 leverage: account.leverage,
                 status: account.status,
-              } : null,
+              },
               terminal_url: (account && account.terminal_url) || process.env.VITE_TRADING_PLATFORM_URL || 'https://trading-platform-two-mu.vercel.app',
             },
           }),
@@ -1874,6 +1943,18 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
         body: JSON.stringify({
           status: 'error',
           code: 'JWT_CONFIGURATION_ERROR',
+          message: error.message,
+        }),
+      };
+    }
+
+    if (error instanceof CrmLaunchSecretConfigurationError || error.name === 'CrmLaunchSecretConfigurationError') {
+      return {
+        statusCode: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'error',
+          code: 'CRM_LAUNCH_SECRET_CONFIGURATION_ERROR',
           message: error.message,
         }),
       };

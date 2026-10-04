@@ -122,6 +122,9 @@ async function runSsoIntegrationTests() {
   const launchToken = generateTradingLaunchToken(userA, account57775, 'broker-tenant-1');
   const decodedLaunch: any = jwt.decode(launchToken);
   assert(!!decodedLaunch, 'Launch token decodes as valid JWT');
+  assert(decodedLaunch.iss === 'crm-backend', 'Claim iss is crm-backend');
+  assert(decodedLaunch.sub === userA.id, 'Claim sub matches authenticated user UUID');
+  assert(decodedLaunch.aud === 'trading-terminal', 'Claim aud is trading-terminal');
   assert(decodedLaunch.accountId === account57775.id, 'Claim accountId matches CRM trading account UUID');
   assert(decodedLaunch.accountNumber === '57775', 'Claim accountNumber matches 57775');
   assert(decodedLaunch.clientId === userA.id, 'Claim clientId matches authenticated user UUID');
@@ -130,7 +133,9 @@ async function runSsoIntegrationTests() {
   assert(decodedLaunch.platform === 'MT5', 'Claim platform is MT5');
   assert(decodedLaunch.currency === 'USD', 'Claim currency is USD');
   assert(decodedLaunch.accountType === 'standard', 'Claim accountType is standard');
-  assert(decodedLaunch.leverage === '1:500', 'Claim leverage is 1:500');
+  assert(decodedLaunch.leverage === 500, 'Claim leverage is canonical numeric 500');
+  assert(typeof decodedLaunch.balance === 'number' && decodedLaunch.balance === 25000, 'Claim balance is canonical numeric 25000');
+  assert(typeof decodedLaunch.initialBalance === 'number' && decodedLaunch.initialBalance === 25000, 'Claim initialBalance is canonical numeric 25000');
   assert(decodedLaunch.type === 'trading_session', 'Claim type is trading_session');
 
   // Verify expiration is short-lived (~300s / 5m)
