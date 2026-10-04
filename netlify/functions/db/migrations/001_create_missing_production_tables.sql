@@ -29,9 +29,13 @@ CREATE TABLE IF NOT EXISTS account_transfers (
     wallet_id UUID NOT NULL REFERENCES wallets(id) ON DELETE CASCADE,
     trading_account_id UUID NOT NULL REFERENCES trading_accounts(id) ON DELETE CASCADE,
     direction VARCHAR(30) NOT NULL CHECK (direction IN ('wallet_to_trading', 'trading_to_wallet')),
-    amount NUMERIC(15,2) NOT NULL,
+    amount NUMERIC(15,2) NOT NULL CHECK (amount > 0),
     currency VARCHAR(10) NOT NULL DEFAULT 'USD',
-    status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+    status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'completed', 'failed', 'cancelled')),
+    execution_status VARCHAR(30) NOT NULL DEFAULT 'unexecuted' CHECK (execution_status IN ('unexecuted', 'executing', 'confirmed', 'failed')),
+    external_transaction_id VARCHAR(100),
+    executed_at TIMESTAMPTZ,
+    idempotency_key VARCHAR(100),
     client_notes TEXT,
     admin_notes TEXT,
     approved_by UUID REFERENCES users(id),
@@ -48,6 +52,8 @@ CREATE INDEX IF NOT EXISTS idx_account_transfers_user_id ON account_transfers(us
 CREATE INDEX IF NOT EXISTS idx_account_transfers_wallet_id ON account_transfers(wallet_id);
 CREATE INDEX IF NOT EXISTS idx_account_transfers_trading_account_id ON account_transfers(trading_account_id);
 CREATE INDEX IF NOT EXISTS idx_account_transfers_status ON account_transfers(status);
+CREATE INDEX IF NOT EXISTS idx_account_transfers_execution_status ON account_transfers(execution_status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_account_transfers_idempotency_key ON account_transfers(idempotency_key) WHERE idempotency_key IS NOT NULL;
 
 -- -----------------------------------------------------------------------------
 -- 3. Table: trading_password_resets

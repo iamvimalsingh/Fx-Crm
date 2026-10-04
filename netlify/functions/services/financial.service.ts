@@ -32,6 +32,8 @@ import {
   CreateAccountTransferInput,
   ApproveAccountTransferInput,
   RejectAccountTransferInput,
+  ConfirmExecutionInput,
+  FailExecutionInput,
 } from '../middleware/validation';
 
 export interface WalletWithAvailable extends WalletRecord {
@@ -193,8 +195,28 @@ export class FinancialService {
     ip?: string,
     userAgent?: string
   ): Promise<DepositRecord> {
-    const wallet = await this.getOrCreateWallet(userId, input.currency || 'USD');
     const depositAmount = toDecimal(input.amount);
+    const amountStr = formatMoney(depositAmount);
+    const idempotencyKey = input.idempotency_key?.trim() || null;
+    const pool = getPool();
+
+    if (idempotencyKey) {
+      if (!pool) {
+        for (const dep of inMemoryDb.deposits.values()) {
+          if ((dep as any).idempotency_key === idempotencyKey) {
+            if (dep.user_id === userId && toDecimal(dep.amount).equals(depositAmount)) {
+              return dep;
+            } else {
+              const err: any = new Error('Idempotency key collision with conflicting deposit payload');
+              err.statusCode = 409;
+              throw err;
+            }
+          }
+        }
+      }
+    }
+
+    const wallet = await this.getOrCreateWallet(userId, input.currency || 'USD');
 
     let paymentMethodName = input.payment_method_name?.trim() || 'Manual / Other';
     const isManualOrOther =
@@ -227,11 +249,9 @@ export class FinancialService {
       }
     }
 
-    const pool = getPool();
     const depositId = crypto.randomUUID();
     const referenceNo = this.generateReference('DEP');
     const now = new Date();
-    const amountStr = formatMoney(depositAmount);
 
     const depositRecord: DepositRecord = {
       id: depositId,
@@ -251,9 +271,10 @@ export class FinancialService {
       rejected_by: null,
       rejected_at: null,
       rejection_reason: null,
+      idempotency_key: idempotencyKey,
       created_at: now,
       updated_at: now,
-    };
+    } as any;
 
     if (pool) {
       await query(
@@ -371,7 +392,7 @@ export class FinancialService {
         `UPDATE deposits 
          SET status = 'approved', approved_by = $1, approved_at = $2, admin_notes = $3, updated_at = $4
          WHERE id = $5`,
-        [adminId, now, input.admin_notes || null, now, deposit.id]
+        [adminId, now, input?.admin_notes || null, now, deposit.id]
       );
 
       await query(
@@ -408,7 +429,7 @@ export class FinancialService {
       deposit.status = 'approved';
       deposit.approved_by = adminId;
       deposit.approved_at = now;
-      deposit.admin_notes = input.admin_notes || null;
+      deposit.admin_notes = input?.admin_notes || null;
       deposit.updated_at = now;
 
       wallet.balance = balanceAfterStr;
@@ -430,7 +451,7 @@ export class FinancialService {
         currency: deposit.currency,
         balance_before: balanceBeforeStr,
         balance_after: balanceAfterStr,
-        admin_notes: input.admin_notes || null,
+        admin_notes: input?.admin_notes || null,
       },
       ip,
       userAgent
@@ -539,8 +560,30 @@ export class FinancialService {
     ip?: string,
     userAgent?: string
   ): Promise<{ withdrawal: WithdrawalRecord; wallet: WalletWithAvailable; transaction: TransactionRecord }> {
-    const wallet = await this.getOrCreateWallet(userId, input.currency || 'USD');
     const withdrawalAmount = toDecimal(input.amount);
+    const amountStr = formatMoney(withdrawalAmount);
+    const idempotencyKey = input.idempotency_key?.trim() || null;
+    const pool = getPool();
+
+    if (idempotencyKey) {
+      if (!pool) {
+        for (const wth of inMemoryDb.withdrawals.values()) {
+          if ((wth as any).idempotency_key === idempotencyKey) {
+            if (wth.user_id === userId && toDecimal(wth.amount).equals(withdrawalAmount)) {
+              const currentWallet = await this.getOrCreateWallet(userId, input.currency || 'USD');
+              const tx = inMemoryDb.transactions.find((t) => t.reference_id === wth.id && t.type === 'withdrawal_reserve');
+              return { withdrawal: wth, wallet: currentWallet, transaction: tx! };
+            } else {
+              const err: any = new Error('Idempotency key collision with conflicting withdrawal payload');
+              err.statusCode = 409;
+              throw err;
+            }
+          }
+        }
+      }
+    }
+
+    const wallet = await this.getOrCreateWallet(userId, input.currency || 'USD');
 
     let paymentMethodName = 'Manual Bank / Crypto Clearing';
     let minLimit = '10.00';
@@ -569,9 +612,7 @@ export class FinancialService {
     const balanceStr = formatMoney(balanceDec);
     const reservedBeforeStr = formatMoney(reservedBeforeDec);
     const reservedAfterStr = formatMoney(reservedAfterDec);
-    const amountStr = formatMoney(withdrawalAmount);
 
-    const pool = getPool();
     const withdrawalId = crypto.randomUUID();
     const referenceNo = this.generateReference('WTH');
     const now = new Date();
@@ -594,9 +635,10 @@ export class FinancialService {
       rejected_by: null,
       rejected_at: null,
       rejection_reason: null,
+      idempotency_key: idempotencyKey,
       created_at: now,
       updated_at: now,
-    };
+    } as any;
 
     const txnNo = this.generateReference('TXN');
     const txnId = crypto.randomUUID();
@@ -786,14 +828,14 @@ export class FinancialService {
 
     if (pool) {
       await query(
-        `UPDATE withdrawals
+        `UPDATE withdrawals 
          SET status = 'approved', approved_by = $1, approved_at = $2, admin_notes = $3, updated_at = $4
          WHERE id = $5`,
-        [adminId, now, input.admin_notes || null, now, withdrawal.id]
+        [adminId, now, input?.admin_notes || null, now, withdrawal.id]
       );
 
       await query(
-        `UPDATE wallets
+        `UPDATE wallets 
          SET balance = $1, reserved_balance = $2, updated_at = $3
          WHERE id = $4`,
         [balanceAfterStr, reservedAfterStr, now, wallet.id]
@@ -825,7 +867,7 @@ export class FinancialService {
       withdrawal.status = 'approved';
       withdrawal.approved_by = adminId;
       withdrawal.approved_at = now;
-      withdrawal.admin_notes = input.admin_notes || null;
+      withdrawal.admin_notes = input?.admin_notes || null;
       withdrawal.updated_at = now;
 
       wallet.balance = balanceAfterStr;
@@ -849,7 +891,7 @@ export class FinancialService {
         balance_after: balanceAfterStr,
         reserved_before: reservedBeforeStr,
         reserved_after: reservedAfterStr,
-        admin_notes: input.admin_notes || null,
+        admin_notes: input?.admin_notes || null,
       },
       ip,
       userAgent
@@ -1478,6 +1520,52 @@ export class FinancialService {
     if (transferAmount.lessThanOrEqualTo(0)) {
       throw new Error('Transfer amount must be greater than 0.00');
     }
+    const amountStr = formatMoney(transferAmount);
+
+    // 0. Idempotency Guard
+    const idempotencyKey = input.idempotency_key?.trim() || null;
+    const pool = getPool();
+
+    if (idempotencyKey) {
+      if (pool) {
+        const existing = await query<AccountTransferRecord>(
+          'SELECT * FROM account_transfers WHERE idempotency_key = $1',
+          [idempotencyKey]
+        );
+        if (existing.length > 0) {
+          const rec = existing[0];
+          if (
+            rec.user_id === userId &&
+            rec.direction === input.direction &&
+            rec.trading_account_id === input.trading_account_id &&
+            toDecimal(rec.amount).equals(transferAmount)
+          ) {
+            return rec;
+          } else {
+            const err: any = new Error('Idempotency key collision with conflicting transfer payload');
+            err.statusCode = 409;
+            throw err;
+          }
+        }
+      } else {
+        for (const rec of inMemoryDb.accountTransfers.values()) {
+          if (rec.idempotency_key === idempotencyKey) {
+            if (
+              rec.user_id === userId &&
+              rec.direction === input.direction &&
+              rec.trading_account_id === input.trading_account_id &&
+              toDecimal(rec.amount).equals(transferAmount)
+            ) {
+              return rec;
+            } else {
+              const err: any = new Error('Idempotency key collision with conflicting transfer payload');
+              err.statusCode = 409;
+              throw err;
+            }
+          }
+        }
+      }
+    }
 
     // 1. Strict IDOR Check: Ensure trading account exists and is owned by this user
     const tradingAccount = await TradingAccountService.getUserAccountById(userId, input.trading_account_id);
@@ -1487,34 +1575,20 @@ export class FinancialService {
       throw err;
     }
 
-    // 2. Fetch or initialize wallet for this currency
+    // 2. Account Eligibility Check: Active or Read-Only only
+    if (tradingAccount.status !== 'active' && tradingAccount.status !== 'read_only') {
+      const err: any = new Error(`Trading account is not eligible for funding (current status: ${tradingAccount.status})`);
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // 3. Fetch or initialize wallet for this currency
     const currency = input.currency || tradingAccount.currency || 'USD';
     const wallet = await this.getOrCreateWallet(userId, currency);
 
-    // 3. Pre-flight check available balance to provide immediate feedback to client
-    if (input.direction === 'wallet_to_trading') {
-      const availableDec = toDecimal(wallet.available_balance);
-      if (availableDec.lessThan(transferAmount)) {
-        throw new Error(
-          `Insufficient wallet balance. Available: $${wallet.available_balance} ${wallet.currency}, Requested: $${formatMoney(transferAmount)}`
-        );
-      }
-    } else if (input.direction === 'trading_to_wallet') {
-      const tradingBalDec = toDecimal(tradingAccount.balance || '0.00');
-      if (tradingBalDec.lessThan(transferAmount)) {
-        throw new Error(
-          `Insufficient trading account balance. Available: $${tradingAccount.balance || '0.00'} ${tradingAccount.currency}, Requested: $${formatMoney(transferAmount)}`
-        );
-      }
-    } else {
-      throw new Error(`Invalid transfer direction: ${input.direction}`);
-    }
-
-    const pool = getPool();
     const transferId = crypto.randomUUID();
     const referenceNo = this.generateReference('TRF');
     const now = new Date();
-    const amountStr = formatMoney(transferAmount);
 
     const record: AccountTransferRecord = {
       id: transferId,
@@ -1526,6 +1600,10 @@ export class FinancialService {
       amount: amountStr,
       currency: wallet.currency,
       status: 'pending',
+      execution_status: 'unexecuted',
+      external_transaction_id: null,
+      executed_at: null,
+      idempotency_key: idempotencyKey,
       client_notes: input.client_notes || null,
       admin_notes: null,
       approved_by: null,
@@ -1537,28 +1615,174 @@ export class FinancialService {
       updated_at: now,
     };
 
-    if (pool) {
-      await query(
-        `INSERT INTO account_transfers (
-          id, reference_no, user_id, wallet_id, trading_account_id, direction, amount, currency, status, client_notes, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-        [
-          record.id,
-          record.reference_no,
-          record.user_id,
-          record.wallet_id,
-          record.trading_account_id,
-          record.direction,
-          record.amount,
-          record.currency,
-          record.status,
-          record.client_notes,
-          record.created_at,
-          record.updated_at,
-        ]
-      );
+    if (input.direction === 'wallet_to_trading') {
+      // Available balance verification
+      const availableDec = toDecimal(wallet.available_balance);
+      if (availableDec.lessThan(transferAmount)) {
+        throw new Error(
+          `Insufficient wallet balance. Available: $${wallet.available_balance} ${wallet.currency}, Requested: $${amountStr}`
+        );
+      }
+
+      // Atomically reserve funds in the client wallet
+      const balanceDec = toDecimal(wallet.balance);
+      const resBeforeDec = toDecimal(wallet.reserved_balance);
+      const resAfterDec = resBeforeDec.plus(transferAmount);
+
+      const balStr = formatMoney(balanceDec);
+      const resBeforeStr = formatMoney(resBeforeDec);
+      const resAfterStr = formatMoney(resAfterDec);
+
+      const txnNo = this.generateReference('TXN');
+      const txnId = crypto.randomUUID();
+
+      const transactionRecord: TransactionRecord = {
+        id: txnId,
+        transaction_no: txnNo,
+        user_id: userId,
+        wallet_id: wallet.id,
+        type: 'transfer_reserve',
+        amount: amountStr,
+        currency: wallet.currency,
+        balance_before: balStr,
+        balance_after: balStr,
+        reserved_before: resBeforeStr,
+        reserved_after: resAfterStr,
+        status: 'completed',
+        reference_type: 'account_transfer',
+        reference_id: transferId,
+        description: `Funds reserved for transfer to Trading Account #${tradingAccount.account_number} (${tradingAccount.platform}) [Ref: ${referenceNo}]`,
+        created_at: now,
+      };
+
+      if (pool) {
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+          // Concurrency lock on wallet row
+          const lockWallet = await client.query<{ balance: string; reserved_balance: string }>(
+            'SELECT balance, reserved_balance FROM wallets WHERE id = $1 FOR UPDATE',
+            [wallet.id]
+          );
+          if (lockWallet.rows.length === 0) {
+            throw new Error('Wallet not found for row lock');
+          }
+          const liveBal = toDecimal(lockWallet.rows[0].balance);
+          const liveRes = toDecimal(lockWallet.rows[0].reserved_balance);
+          const liveAvail = liveBal.minus(liveRes);
+          if (liveAvail.lessThan(transferAmount)) {
+            throw new Error(
+              `Insufficient wallet balance. Available: $${formatMoney(liveAvail)} ${wallet.currency}, Requested: $${amountStr}`
+            );
+          }
+
+          const newRes = liveRes.plus(transferAmount);
+          await client.query('UPDATE wallets SET reserved_balance = $1, updated_at = $2 WHERE id = $3', [
+            formatMoney(newRes),
+            now,
+            wallet.id,
+          ]);
+
+          await client.query(
+            `INSERT INTO transactions (id, transaction_no, user_id, wallet_id, type, amount, currency, balance_before, balance_after, reserved_before, reserved_after, status, reference_type, reference_id, description, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+            [
+              transactionRecord.id,
+              transactionRecord.transaction_no,
+              transactionRecord.user_id,
+              transactionRecord.wallet_id,
+              transactionRecord.type,
+              transactionRecord.amount,
+              transactionRecord.currency,
+              transactionRecord.balance_before,
+              transactionRecord.balance_after,
+              transactionRecord.reserved_before,
+              transactionRecord.reserved_after,
+              transactionRecord.status,
+              transactionRecord.reference_type,
+              transactionRecord.reference_id,
+              transactionRecord.description,
+              transactionRecord.created_at,
+            ]
+          );
+
+          await client.query(
+            `INSERT INTO account_transfers (
+              id, reference_no, user_id, wallet_id, trading_account_id, direction, amount, currency, status, execution_status, idempotency_key, client_notes, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+            [
+              record.id,
+              record.reference_no,
+              record.user_id,
+              record.wallet_id,
+              record.trading_account_id,
+              record.direction,
+              record.amount,
+              record.currency,
+              record.status,
+              record.execution_status,
+              record.idempotency_key,
+              record.client_notes,
+              record.created_at,
+              record.updated_at,
+            ]
+          );
+
+          await client.query('COMMIT');
+        } catch (dbErr) {
+          await client.query('ROLLBACK');
+          throw dbErr;
+        } finally {
+          client.release();
+        }
+      } else {
+        wallet.reserved_balance = resAfterStr;
+        wallet.updated_at = now;
+        inMemoryDb.wallets.set(wallet.id, wallet);
+        inMemoryDb.wallets.set(`${wallet.user_id}_${wallet.currency}`, wallet);
+        inMemoryDb.accountTransfers.set(record.id, record);
+        inMemoryDb.transactions.unshift(transactionRecord);
+      }
+    } else if (input.direction === 'trading_to_wallet') {
+      // Pre-flight sanity check against cached registry balance if present
+      if (tradingAccount.balance !== undefined && tradingAccount.balance !== null) {
+        const accBal = toDecimal(tradingAccount.balance);
+        if (accBal.lessThan(transferAmount)) {
+          throw new Error(
+            `Insufficient trading account balance. Available: $${tradingAccount.balance} ${tradingAccount.currency}, Requested: $${amountStr}`
+          );
+        }
+      }
+
+      // In accordance with Step 2, do NOT use CRM cached balance as final authority.
+      // Request is placed into pending status with execution_status unexecuted.
+      if (pool) {
+        await query(
+          `INSERT INTO account_transfers (
+            id, reference_no, user_id, wallet_id, trading_account_id, direction, amount, currency, status, execution_status, idempotency_key, client_notes, created_at, updated_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+          [
+            record.id,
+            record.reference_no,
+            record.user_id,
+            record.wallet_id,
+            record.trading_account_id,
+            record.direction,
+            record.amount,
+            record.currency,
+            record.status,
+            record.execution_status,
+            record.idempotency_key,
+            record.client_notes,
+            record.created_at,
+            record.updated_at,
+          ]
+        );
+      } else {
+        inMemoryDb.accountTransfers.set(record.id, record);
+      }
     } else {
-      inMemoryDb.accountTransfers.set(record.id, record);
+      throw new Error(`Invalid transfer direction: ${input.direction}`);
     }
 
     await this.recordAuditLog(
@@ -1694,7 +1918,7 @@ export class FinancialService {
     userAgent?: string
   ): Promise<{
     transfer: AccountTransferRecord;
-    transaction: TransactionRecord;
+    transaction?: TransactionRecord;
     wallet: WalletWithAvailable;
     trading_account: any;
   }> {
@@ -1733,32 +1957,26 @@ export class FinancialService {
     const txnNo = this.generateReference('TXN');
     const txnId = crypto.randomUUID();
 
-    let walletBalanceAfterDec: Decimal;
-    let tradingBalanceAfterDec: Decimal;
-    let transactionRecord: TransactionRecord;
+    let transactionRecord: TransactionRecord | undefined;
 
     const walletBalanceBeforeDec = toDecimal(wallet.balance);
     const walletReservedDec = toDecimal(wallet.reserved_balance);
-    const tradingBalanceBeforeDec = toDecimal(tradingAccount.balance || '0.00');
-
     const walletBalBeforeStr = formatMoney(walletBalanceBeforeDec);
     const walletResStr = formatMoney(walletReservedDec);
-    const tradingBalBeforeStr = formatMoney(tradingBalanceBeforeDec);
 
     if (transfer.direction === 'wallet_to_trading') {
-      // Validate wallet has sufficient available balance
-      const walletAvailDec = toDecimal(wallet.available_balance);
-      if (walletAvailDec.lessThan(transferAmountDec)) {
-        throw new Error(
-          `Insufficient wallet funds for approval. Available: $${wallet.available_balance} ${wallet.currency}, Requested: $${transfer.amount}`
-        );
+      // Wallet was reserved at creation: balance has amount, reserved_balance has amount
+      const walletReservedAfterDec = walletReservedDec.minus(transferAmountDec);
+      if (walletReservedAfterDec.isNegative()) {
+        throw new Error('Invariant violation: Reserved balance cannot be negative on approval');
+      }
+      const walletBalanceAfterDec = walletBalanceBeforeDec.minus(transferAmountDec);
+      if (walletBalanceAfterDec.isNegative()) {
+        throw new Error('Invariant violation: Wallet balance cannot be negative on approval');
       }
 
-      // Wallet debited, Trading account credited
-      walletBalanceAfterDec = walletBalanceBeforeDec.minus(transferAmountDec);
-      tradingBalanceAfterDec = tradingBalanceBeforeDec.plus(transferAmountDec);
-
       const walletBalAfterStr = formatMoney(walletBalanceAfterDec);
+      const walletResAfterStr = formatMoney(walletReservedAfterDec);
 
       transactionRecord = {
         id: txnId,
@@ -1771,143 +1989,121 @@ export class FinancialService {
         balance_before: walletBalBeforeStr,
         balance_after: walletBalAfterStr,
         reserved_before: walletResStr,
-        reserved_after: walletResStr,
+        reserved_after: walletResAfterStr,
         status: 'completed',
         reference_type: 'account_transfer',
         reference_id: transfer.id,
         description: `Transfer to Trading Account #${tradingAccount.account_number} (${tradingAccount.platform}) [Ref: ${transfer.reference_no}]`,
         created_at: now,
       };
-    } else if (transfer.direction === 'trading_to_wallet') {
-      // Validate trading account has sufficient balance
-      if (tradingBalanceBeforeDec.lessThan(transferAmountDec)) {
-        throw new Error(
-          `Insufficient trading account balance for approval. Current balance: $${tradingBalBeforeStr} ${tradingAccount.currency}, Requested: $${transfer.amount}`
-        );
+
+      if (pool) {
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+
+          const updateRes = await client.query(
+            `UPDATE account_transfers 
+             SET status = 'approved', execution_status = 'executing', approved_by = $1, approved_at = $2, admin_notes = $3, updated_at = $4
+             WHERE id = $5 AND status = 'pending'
+             RETURNING id`,
+            [adminId, now, input?.admin_notes || null, now, transfer.id]
+          );
+
+          if (updateRes.rows.length === 0) {
+            throw new Error('Concurrent transfer update detected: transfer was already processed or is no longer pending.');
+          }
+
+          // Update wallet balance and release reserve
+          await client.query(
+            `UPDATE wallets SET balance = $1, reserved_balance = $2, updated_at = $3 WHERE id = $4`,
+            [walletBalAfterStr, walletResAfterStr, now, wallet.id]
+          );
+
+          // Insert transaction ledger record
+          await client.query(
+            `INSERT INTO transactions (id, transaction_no, user_id, wallet_id, type, amount, currency, balance_before, balance_after, reserved_before, reserved_after, status, reference_type, reference_id, description, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+            [
+              transactionRecord.id,
+              transactionRecord.transaction_no,
+              transactionRecord.user_id,
+              transactionRecord.wallet_id,
+              transactionRecord.type,
+              transactionRecord.amount,
+              transactionRecord.currency,
+              transactionRecord.balance_before,
+              transactionRecord.balance_after,
+              transactionRecord.reserved_before,
+              transactionRecord.reserved_after,
+              transactionRecord.status,
+              transactionRecord.reference_type,
+              transactionRecord.reference_id,
+              transactionRecord.description,
+              transactionRecord.created_at,
+            ]
+          );
+
+          await client.query('COMMIT');
+        } catch (dbErr) {
+          await client.query('ROLLBACK');
+          throw dbErr;
+        } finally {
+          client.release();
+        }
+      } else {
+        const current = inMemoryDb.accountTransfers.get(transfer.id);
+        if (!current || current.status !== 'pending') {
+          throw new Error('Concurrent transfer update detected: transfer was already processed or is no longer pending.');
+        }
+
+        wallet.balance = walletBalAfterStr;
+        wallet.reserved_balance = walletResAfterStr;
+        wallet.updated_at = now;
+        inMemoryDb.wallets.set(wallet.id, wallet);
+        inMemoryDb.wallets.set(`${wallet.user_id}_${wallet.currency}`, wallet);
+
+        inMemoryDb.transactions.unshift(transactionRecord);
       }
 
-      // Trading account debited, Wallet credited
-      tradingBalanceAfterDec = tradingBalanceBeforeDec.minus(transferAmountDec);
-      walletBalanceAfterDec = walletBalanceBeforeDec.plus(transferAmountDec);
-
-      const walletBalAfterStr = formatMoney(walletBalanceAfterDec);
-
-      transactionRecord = {
-        id: txnId,
-        transaction_no: txnNo,
-        user_id: transfer.user_id,
-        wallet_id: wallet.id,
-        type: 'transfer_in',
-        amount: formatMoney(transferAmountDec),
-        currency: wallet.currency,
-        balance_before: walletBalBeforeStr,
-        balance_after: walletBalAfterStr,
-        reserved_before: walletResStr,
-        reserved_after: walletResStr,
-        status: 'completed',
-        reference_type: 'account_transfer',
-        reference_id: transfer.id,
-        description: `Transfer from Trading Account #${tradingAccount.account_number} (${tradingAccount.platform}) [Ref: ${transfer.reference_no}]`,
-        created_at: now,
-      };
-    } else {
-      throw new Error(`Invalid transfer direction: ${transfer.direction}`);
-    }
-
-    const walletBalAfterStr = formatMoney(walletBalanceAfterDec);
-    const tradingBalAfterStr = formatMoney(tradingBalanceAfterDec);
-
-    if (pool) {
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-
-        // Atomic status transition with concurrency check
-        const updateRes = await client.query(
+      transfer.status = 'approved';
+      transfer.execution_status = 'executing';
+      transfer.approved_by = adminId;
+      transfer.approved_at = now;
+      transfer.admin_notes = input?.admin_notes || null;
+      transfer.updated_at = now;
+      if (!pool) inMemoryDb.accountTransfers.set(transfer.id, transfer);
+    } else if (transfer.direction === 'trading_to_wallet') {
+      // Step 2 Invariant: DO NOT credit CRM wallet yet!
+      // Status transitions to approved, execution_status to executing.
+      // Wallet will be credited only upon confirmed external execution.
+      if (pool) {
+        const updateRes = await query(
           `UPDATE account_transfers 
-           SET status = 'approved', approved_by = $1, approved_at = $2, admin_notes = $3, updated_at = $4
+           SET status = 'approved', execution_status = 'executing', approved_by = $1, approved_at = $2, admin_notes = $3, updated_at = $4
            WHERE id = $5 AND status = 'pending'
            RETURNING id`,
           [adminId, now, input?.admin_notes || null, now, transfer.id]
         );
-
-        // Check for concurrent approval
-        if (updateRes.rows.length === 0) {
+        if (Array.isArray(updateRes) && updateRes.length === 0) {
           throw new Error('Concurrent transfer update detected: transfer was already processed or is no longer pending.');
         }
-
-        // Update wallet balance
-        await client.query(
-          `UPDATE wallets SET balance = $1, updated_at = $2 WHERE id = $3`,
-          [walletBalAfterStr, now, wallet.id]
-        );
-
-        // Insert transaction ledger record
-        await client.query(
-          `INSERT INTO transactions (id, transaction_no, user_id, wallet_id, type, amount, currency, balance_before, balance_after, reserved_before, reserved_after, status, reference_type, reference_id, description, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
-          [
-            transactionRecord.id,
-            transactionRecord.transaction_no,
-            transactionRecord.user_id,
-            transactionRecord.wallet_id,
-            transactionRecord.type,
-            transactionRecord.amount,
-            transactionRecord.currency,
-            transactionRecord.balance_before,
-            transactionRecord.balance_after,
-            transactionRecord.reserved_before,
-            transactionRecord.reserved_after,
-            transactionRecord.status,
-            transactionRecord.reference_type,
-            transactionRecord.reference_id,
-            transactionRecord.description,
-            transactionRecord.created_at,
-          ]
-        );
-
-        // Update trading account balance
-        await client.query(
-          `UPDATE trading_accounts 
-           SET balance = $1, updated_at = $2
-           WHERE id = $3`,
-          [tradingBalAfterStr, now, tradingAccount.id]
-        );
-
-        await client.query('COMMIT');
-      } catch (dbErr) {
-        await client.query('ROLLBACK');
-        throw dbErr;
-      } finally {
-        client.release();
+      } else {
+        const current = inMemoryDb.accountTransfers.get(transfer.id);
+        if (!current || current.status !== 'pending') {
+          throw new Error('Concurrent transfer update detected: transfer was already processed or is no longer pending.');
+        }
       }
 
       transfer.status = 'approved';
+      transfer.execution_status = 'executing';
       transfer.approved_by = adminId;
       transfer.approved_at = now;
       transfer.admin_notes = input?.admin_notes || null;
       transfer.updated_at = now;
+      if (!pool) inMemoryDb.accountTransfers.set(transfer.id, transfer);
     } else {
-      // In-Memory state update with concurrency check
-      const current = inMemoryDb.accountTransfers.get(transfer.id);
-      if (!current || current.status !== 'pending') {
-        throw new Error('Concurrent transfer update detected: transfer was already processed or is no longer pending.');
-      }
-
-      transfer.status = 'approved';
-      transfer.approved_by = adminId;
-      transfer.approved_at = now;
-      transfer.admin_notes = input?.admin_notes || null;
-      transfer.updated_at = now;
-
-      wallet.balance = walletBalAfterStr;
-      wallet.updated_at = now;
-      inMemoryDb.wallets.set(wallet.id, wallet);
-      inMemoryDb.wallets.set(`${wallet.user_id}_${wallet.currency}`, wallet);
-
-      await TradingAccountService.updateAccountBalance(tradingAccount.id, tradingBalAfterStr);
-
-      inMemoryDb.transactions.unshift(transactionRecord);
+      throw new Error(`Invalid transfer direction: ${transfer.direction}`);
     }
 
     await this.recordAuditLog(
@@ -1923,9 +2119,8 @@ export class FinancialService {
         trading_account_id: tradingAccount.id,
         account_number: tradingAccount.account_number,
         wallet_balance_before: walletBalBeforeStr,
-        wallet_balance_after: walletBalAfterStr,
-        trading_balance_before: tradingBalBeforeStr,
-        trading_balance_after: tradingBalAfterStr,
+        wallet_balance_after: formatMoney(wallet.balance),
+        execution_status: transfer.execution_status,
         admin_notes: input?.admin_notes || null,
       },
       ip,
@@ -1935,7 +2130,7 @@ export class FinancialService {
     await NotificationService.createNotification(
       transfer.user_id,
       'Transfer Request Approved',
-      `Your transfer of $${transfer.amount} ${transfer.currency} (${transfer.reference_no}) between Wallet and Trading Account #${tradingAccount.account_number} has been approved.`,
+      `Your transfer of $${transfer.amount} ${transfer.currency} (${transfer.reference_no}) between Wallet and Trading Account #${tradingAccount.account_number} has been approved and is queued for execution.`,
       'trading_account',
       {
         transfer_id: transfer.id,
@@ -1958,8 +2153,401 @@ export class FinancialService {
   }
 
   /**
+   * ADMIN / EXECUTION BOUNDARY: Confirms external execution of an approved transfer.
+   * On wallet_to_trading: Marks transfer confirmed/completed.
+   * On trading_to_wallet: Atomically credits client wallet and appends transfer_in transaction ledger entry.
+   */
+  public static async confirmExecution(
+    transferId: string,
+    adminId: string,
+    input: ConfirmExecutionInput,
+    ip?: string,
+    userAgent?: string
+  ): Promise<{
+    transfer: AccountTransferRecord;
+    wallet: WalletWithAvailable;
+    transaction?: TransactionRecord;
+  }> {
+    const pool = getPool();
+    let transfer: AccountTransferRecord | null = null;
+
+    if (pool) {
+      const rows = await query<AccountTransferRecord>('SELECT * FROM account_transfers WHERE id = $1', [transferId]);
+      transfer = rows[0] || null;
+    } else {
+      transfer = inMemoryDb.accountTransfers.get(transferId) || null;
+    }
+
+    if (!transfer) {
+      const err: any = new Error(`Transfer request "${transferId}" not found`);
+      err.statusCode = 404;
+      throw err;
+    }
+
+    if (transfer.status !== 'approved' && transfer.execution_status !== 'executing') {
+      const err: any = new Error(
+        `Cannot confirm execution for transfer in "${transfer.status}" status (execution status: "${transfer.execution_status}"). Transfer must be approved and executing.`
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const now = new Date();
+    const externalTxnId = input.external_transaction_id.trim();
+    let transactionRecord: TransactionRecord | undefined;
+
+    const wallet = await this.getOrCreateWallet(transfer.user_id, transfer.currency);
+    const tradingAccount = await TradingAccountService.findRawAccount(transfer.trading_account_id);
+
+    if (transfer.direction === 'wallet_to_trading') {
+      // Wallet was already debited during approval. External execution is now confirmed.
+      transfer.status = 'completed';
+      transfer.execution_status = 'confirmed';
+      transfer.external_transaction_id = externalTxnId;
+      transfer.executed_at = now;
+      if (input.execution_notes) {
+        transfer.admin_notes = (transfer.admin_notes ? transfer.admin_notes + ' | ' : '') + `Execution: ${input.execution_notes}`;
+      }
+      transfer.updated_at = now;
+
+      if (pool) {
+        await query(
+          `UPDATE account_transfers 
+           SET status = 'completed', execution_status = 'confirmed', external_transaction_id = $1, executed_at = $2, admin_notes = $3, updated_at = $4
+           WHERE id = $5`,
+          [externalTxnId, now, transfer.admin_notes, now, transfer.id]
+        );
+      } else {
+        inMemoryDb.accountTransfers.set(transfer.id, transfer);
+      }
+    } else if (transfer.direction === 'trading_to_wallet') {
+      // External debit from Trading Engine is now confirmed!
+      // Atomically credit the client's CRM wallet and record transfer_in ledger entry.
+      const transferAmountDec = toDecimal(transfer.amount);
+      const walletBalBeforeDec = toDecimal(wallet.balance);
+      const walletBalAfterDec = walletBalBeforeDec.plus(transferAmountDec);
+      const walletResDec = toDecimal(wallet.reserved_balance);
+
+      const walletBalBeforeStr = formatMoney(walletBalBeforeDec);
+      const walletBalAfterStr = formatMoney(walletBalAfterDec);
+      const walletResStr = formatMoney(walletResDec);
+
+      const txnNo = this.generateReference('TXN');
+      const txnId = crypto.randomUUID();
+
+      transactionRecord = {
+        id: txnId,
+        transaction_no: txnNo,
+        user_id: transfer.user_id,
+        wallet_id: wallet.id,
+        type: 'transfer_in',
+        amount: formatMoney(transferAmountDec),
+        currency: wallet.currency,
+        balance_before: walletBalBeforeStr,
+        balance_after: walletBalAfterStr,
+        reserved_before: walletResStr,
+        reserved_after: walletResStr,
+        status: 'completed',
+        reference_type: 'account_transfer',
+        reference_id: transfer.id,
+        description: `Transfer from Trading Account #${tradingAccount?.account_number || ''} confirmed [Ref: ${transfer.reference_no}, Ext: ${externalTxnId}]`,
+        created_at: now,
+      };
+
+      transfer.status = 'completed';
+      transfer.execution_status = 'confirmed';
+      transfer.external_transaction_id = externalTxnId;
+      transfer.executed_at = now;
+      if (input.execution_notes) {
+        transfer.admin_notes = (transfer.admin_notes ? transfer.admin_notes + ' | ' : '') + `Execution: ${input.execution_notes}`;
+      }
+      transfer.updated_at = now;
+
+      if (pool) {
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+          await client.query(
+            `UPDATE account_transfers 
+             SET status = 'completed', execution_status = 'confirmed', external_transaction_id = $1, executed_at = $2, admin_notes = $3, updated_at = $4
+             WHERE id = $5`,
+            [externalTxnId, now, transfer.admin_notes, now, transfer.id]
+          );
+          await client.query(
+            `UPDATE wallets SET balance = $1, updated_at = $2 WHERE id = $3`,
+            [walletBalAfterStr, now, wallet.id]
+          );
+          await client.query(
+            `INSERT INTO transactions (id, transaction_no, user_id, wallet_id, type, amount, currency, balance_before, balance_after, reserved_before, reserved_after, status, reference_type, reference_id, description, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+            [
+              transactionRecord.id,
+              transactionRecord.transaction_no,
+              transactionRecord.user_id,
+              transactionRecord.wallet_id,
+              transactionRecord.type,
+              transactionRecord.amount,
+              transactionRecord.currency,
+              transactionRecord.balance_before,
+              transactionRecord.balance_after,
+              transactionRecord.reserved_before,
+              transactionRecord.reserved_after,
+              transactionRecord.status,
+              transactionRecord.reference_type,
+              transactionRecord.reference_id,
+              transactionRecord.description,
+              transactionRecord.created_at,
+            ]
+          );
+          await client.query('COMMIT');
+        } catch (dbErr) {
+          await client.query('ROLLBACK');
+          throw dbErr;
+        } finally {
+          client.release();
+        }
+      } else {
+        wallet.balance = walletBalAfterStr;
+        wallet.updated_at = now;
+        inMemoryDb.wallets.set(wallet.id, wallet);
+        inMemoryDb.wallets.set(`${wallet.user_id}_${wallet.currency}`, wallet);
+        inMemoryDb.accountTransfers.set(transfer.id, transfer);
+        inMemoryDb.transactions.unshift(transactionRecord);
+      }
+    }
+
+    await this.recordAuditLog(
+      adminId,
+      'TRANSFER_EXECUTION_CONFIRMED',
+      'account_transfer',
+      transfer.id,
+      {
+        reference_no: transfer.reference_no,
+        external_transaction_id: externalTxnId,
+        direction: transfer.direction,
+        amount: transfer.amount,
+        currency: transfer.currency,
+        trading_account_id: transfer.trading_account_id,
+        admin_notes: input.execution_notes || null,
+      },
+      ip,
+      userAgent
+    );
+
+    await NotificationService.createNotification(
+      transfer.user_id,
+      'Transfer Completed',
+      `Your transfer ${transfer.reference_no} ($${transfer.amount} ${transfer.currency}) has been confirmed and completed. External Ref: ${externalTxnId}`,
+      'trading_account',
+      {
+        transfer_id: transfer.id,
+        reference_no: transfer.reference_no,
+        external_transaction_id: externalTxnId,
+        amount: transfer.amount,
+        currency: transfer.currency,
+      }
+    );
+
+    const updatedWallet = await this.getOrCreateWallet(transfer.user_id, transfer.currency);
+    return { transfer, wallet: updatedWallet, transaction: transactionRecord };
+  }
+
+  /**
+   * ADMIN / EXECUTION BOUNDARY: Marks execution failed.
+   * If wallet_to_trading: Reconciles/refunds the debited wallet balance via compensating ledger record.
+   * If trading_to_wallet: No wallet balance was moved; marks record failed.
+   */
+  public static async failExecution(
+    transferId: string,
+    adminId: string,
+    input: FailExecutionInput,
+    ip?: string,
+    userAgent?: string
+  ): Promise<{
+    transfer: AccountTransferRecord;
+    wallet: WalletWithAvailable;
+    transaction?: TransactionRecord;
+  }> {
+    const pool = getPool();
+    let transfer: AccountTransferRecord | null = null;
+
+    if (pool) {
+      const rows = await query<AccountTransferRecord>('SELECT * FROM account_transfers WHERE id = $1', [transferId]);
+      transfer = rows[0] || null;
+    } else {
+      transfer = inMemoryDb.accountTransfers.get(transferId) || null;
+    }
+
+    if (!transfer) {
+      const err: any = new Error(`Transfer request "${transferId}" not found`);
+      err.statusCode = 404;
+      throw err;
+    }
+
+    if (transfer.status !== 'approved' && transfer.execution_status !== 'executing') {
+      const err: any = new Error(
+        `Cannot fail execution for transfer in "${transfer.status}" status (execution status: "${transfer.execution_status}"). Transfer must be executing.`
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const now = new Date();
+    const failureReason = input.failure_reason.trim();
+    let compensatingTxn: TransactionRecord | undefined;
+
+    const wallet = await this.getOrCreateWallet(transfer.user_id, transfer.currency);
+
+    if (transfer.direction === 'wallet_to_trading') {
+      // Wallet was debited upon approval! Must roll back / refund wallet balance.
+      const transferAmountDec = toDecimal(transfer.amount);
+      const walletBalBeforeDec = toDecimal(wallet.balance);
+      const walletBalAfterDec = walletBalBeforeDec.plus(transferAmountDec);
+      const walletResDec = toDecimal(wallet.reserved_balance);
+
+      const walletBalBeforeStr = formatMoney(walletBalBeforeDec);
+      const walletBalAfterStr = formatMoney(walletBalAfterDec);
+      const walletResStr = formatMoney(walletResDec);
+
+      const txnNo = this.generateReference('TXN');
+      const txnId = crypto.randomUUID();
+
+      compensatingTxn = {
+        id: txnId,
+        transaction_no: txnNo,
+        user_id: transfer.user_id,
+        wallet_id: wallet.id,
+        type: 'adjustment_credit',
+        amount: formatMoney(transferAmountDec),
+        currency: wallet.currency,
+        balance_before: walletBalBeforeStr,
+        balance_after: walletBalAfterStr,
+        reserved_before: walletResStr,
+        reserved_after: walletResStr,
+        status: 'completed',
+        reference_type: 'account_transfer',
+        reference_id: transfer.id,
+        description: `Compensating refund for failed transfer [Ref: ${transfer.reference_no}]. Reason: ${failureReason}`,
+        created_at: now,
+      };
+
+      transfer.status = 'failed';
+      transfer.execution_status = 'failed';
+      transfer.rejection_reason = failureReason;
+      if (input.admin_notes) {
+        transfer.admin_notes = (transfer.admin_notes ? transfer.admin_notes + ' | ' : '') + `Failure notes: ${input.admin_notes}`;
+      }
+      transfer.updated_at = now;
+
+      if (pool) {
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+          await client.query(
+            `UPDATE account_transfers 
+             SET status = 'failed', execution_status = 'failed', rejection_reason = $1, admin_notes = $2, updated_at = $3
+             WHERE id = $4`,
+            [failureReason, transfer.admin_notes, now, transfer.id]
+          );
+          await client.query(
+            `UPDATE wallets SET balance = $1, updated_at = $2 WHERE id = $3`,
+            [walletBalAfterStr, now, wallet.id]
+          );
+          await client.query(
+            `INSERT INTO transactions (id, transaction_no, user_id, wallet_id, type, amount, currency, balance_before, balance_after, reserved_before, reserved_after, status, reference_type, reference_id, description, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+            [
+              compensatingTxn.id,
+              compensatingTxn.transaction_no,
+              compensatingTxn.user_id,
+              compensatingTxn.wallet_id,
+              compensatingTxn.type,
+              compensatingTxn.amount,
+              compensatingTxn.currency,
+              compensatingTxn.balance_before,
+              compensatingTxn.balance_after,
+              compensatingTxn.reserved_before,
+              compensatingTxn.reserved_after,
+              compensatingTxn.status,
+              compensatingTxn.reference_type,
+              compensatingTxn.reference_id,
+              compensatingTxn.description,
+              compensatingTxn.created_at,
+            ]
+          );
+          await client.query('COMMIT');
+        } catch (dbErr) {
+          await client.query('ROLLBACK');
+          throw dbErr;
+        } finally {
+          client.release();
+        }
+      } else {
+        wallet.balance = walletBalAfterStr;
+        wallet.updated_at = now;
+        inMemoryDb.wallets.set(wallet.id, wallet);
+        inMemoryDb.wallets.set(`${wallet.user_id}_${wallet.currency}`, wallet);
+        inMemoryDb.accountTransfers.set(transfer.id, transfer);
+        inMemoryDb.transactions.unshift(compensatingTxn);
+      }
+    } else {
+      // trading_to_wallet: Wallet was never credited. Simply mark failed.
+      transfer.status = 'failed';
+      transfer.execution_status = 'failed';
+      transfer.rejection_reason = failureReason;
+      if (input.admin_notes) {
+        transfer.admin_notes = (transfer.admin_notes ? transfer.admin_notes + ' | ' : '') + `Failure notes: ${input.admin_notes}`;
+      }
+      transfer.updated_at = now;
+
+      if (pool) {
+        await query(
+          `UPDATE account_transfers 
+           SET status = 'failed', execution_status = 'failed', rejection_reason = $1, admin_notes = $2, updated_at = $3
+           WHERE id = $4`,
+          [failureReason, transfer.admin_notes, now, transfer.id]
+        );
+      } else {
+        inMemoryDb.accountTransfers.set(transfer.id, transfer);
+      }
+    }
+
+    await this.recordAuditLog(
+      adminId,
+      'TRANSFER_EXECUTION_FAILED',
+      'account_transfer',
+      transfer.id,
+      {
+        reference_no: transfer.reference_no,
+        failure_reason: failureReason,
+        direction: transfer.direction,
+        amount: transfer.amount,
+        currency: transfer.currency,
+        trading_account_id: transfer.trading_account_id,
+      },
+      ip,
+      userAgent
+    );
+
+    await NotificationService.createNotification(
+      transfer.user_id,
+      'Transfer Failed',
+      `Your transfer ${transfer.reference_no} failed: ${failureReason}. Funds have been reconciled.`,
+      'trading_account',
+      {
+        transfer_id: transfer.id,
+        reference_no: transfer.reference_no,
+        failure_reason: failureReason,
+      }
+    );
+
+    const updatedWallet = await this.getOrCreateWallet(transfer.user_id, transfer.currency);
+    return { transfer, wallet: updatedWallet, transaction: compensatingTxn };
+  }
+
+  /**
    * ADMIN: Rejects a pending transfer request.
-   * Marks request as rejected with reason. No balances are moved.
+   * If wallet_to_trading: Releases reserved wallet balance and appends transfer_release ledger transaction.
    */
   public static async rejectAccountTransfer(
     transferId: string,
@@ -1967,7 +2555,7 @@ export class FinancialService {
     input?: RejectAccountTransferInput,
     ip?: string,
     userAgent?: string
-  ): Promise<{ transfer: AccountTransferRecord }> {
+  ): Promise<{ transfer: AccountTransferRecord; wallet?: WalletWithAvailable }> {
     const pool = getPool();
     let transfer: AccountTransferRecord | null = null;
 
@@ -1992,39 +2580,123 @@ export class FinancialService {
 
     const now = new Date();
     const reason = input?.rejection_reason || 'Rejected by administrator';
+    const wallet = await this.getOrCreateWallet(transfer.user_id, transfer.currency);
 
-    if (pool) {
-      const updateRes: any = await query(
-        `UPDATE account_transfers 
-         SET status = 'rejected', rejected_by = $1, rejected_at = $2, rejection_reason = $3, admin_notes = $4, updated_at = $5
-         WHERE id = $6 AND status = 'pending'
-         RETURNING id`,
-        [adminId, now, reason, input?.admin_notes || null, now, transfer.id]
-      );
+    if (transfer.direction === 'wallet_to_trading') {
+      // Release the reserved balance
+      const transferAmountDec = toDecimal(transfer.amount);
+      const walletBalDec = toDecimal(wallet.balance);
+      const resBeforeDec = toDecimal(wallet.reserved_balance);
+      const resAfterDec = resBeforeDec.minus(transferAmountDec);
 
-      if (Array.isArray(updateRes) && updateRes.length === 0) {
-        throw new Error('Concurrent transfer update detected: transfer was already processed or is no longer pending.');
+      if (resAfterDec.isNegative()) {
+        throw new Error('Invariant violation: Reserved balance cannot be negative on release');
       }
 
+      const balStr = formatMoney(walletBalDec);
+      const resBeforeStr = formatMoney(resBeforeDec);
+      const resAfterStr = formatMoney(resAfterDec);
+
+      const txnNo = this.generateReference('TXN');
+      const txnId = crypto.randomUUID();
+
+      const transactionRecord: TransactionRecord = {
+        id: txnId,
+        transaction_no: txnNo,
+        user_id: transfer.user_id,
+        wallet_id: wallet.id,
+        type: 'transfer_release',
+        amount: transfer.amount,
+        currency: wallet.currency,
+        balance_before: balStr,
+        balance_after: balStr,
+        reserved_before: resBeforeStr,
+        reserved_after: resAfterStr,
+        status: 'completed',
+        reference_type: 'account_transfer',
+        reference_id: transfer.id,
+        description: `Reserved funds released on transfer rejection [Ref: ${transfer.reference_no}]`,
+        created_at: now,
+      };
+
       transfer.status = 'rejected';
+      transfer.execution_status = 'failed';
       transfer.rejected_by = adminId;
       transfer.rejected_at = now;
       transfer.rejection_reason = reason;
       transfer.admin_notes = input?.admin_notes || null;
       transfer.updated_at = now;
+
+      if (pool) {
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+          await client.query(
+            `UPDATE account_transfers 
+             SET status = 'rejected', execution_status = 'failed', rejected_by = $1, rejected_at = $2, rejection_reason = $3, admin_notes = $4, updated_at = $5
+             WHERE id = $6 AND status = 'pending'`,
+            [adminId, now, reason, input?.admin_notes || null, now, transfer.id]
+          );
+          await client.query(
+            `UPDATE wallets SET reserved_balance = $1, updated_at = $2 WHERE id = $3`,
+            [resAfterStr, now, wallet.id]
+          );
+          await client.query(
+            `INSERT INTO transactions (id, transaction_no, user_id, wallet_id, type, amount, currency, balance_before, balance_after, reserved_before, reserved_after, status, reference_type, reference_id, description, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+            [
+              transactionRecord.id,
+              transactionRecord.transaction_no,
+              transactionRecord.user_id,
+              transactionRecord.wallet_id,
+              transactionRecord.type,
+              transactionRecord.amount,
+              transactionRecord.currency,
+              transactionRecord.balance_before,
+              transactionRecord.balance_after,
+              transactionRecord.reserved_before,
+              transactionRecord.reserved_after,
+              transactionRecord.status,
+              transactionRecord.reference_type,
+              transactionRecord.reference_id,
+              transactionRecord.description,
+              transactionRecord.created_at,
+            ]
+          );
+          await client.query('COMMIT');
+        } catch (dbErr) {
+          await client.query('ROLLBACK');
+          throw dbErr;
+        } finally {
+          client.release();
+        }
+      } else {
+        wallet.reserved_balance = resAfterStr;
+        wallet.updated_at = now;
+        inMemoryDb.wallets.set(wallet.id, wallet);
+        inMemoryDb.wallets.set(`${wallet.user_id}_${wallet.currency}`, wallet);
+        inMemoryDb.accountTransfers.set(transfer.id, transfer);
+        inMemoryDb.transactions.unshift(transactionRecord);
+      }
     } else {
-      // In-Memory state update with concurrency check
-      const current = inMemoryDb.accountTransfers.get(transfer.id);
-      if (!current || current.status !== 'pending') {
-        throw new Error('Concurrent transfer update detected: transfer was already processed or is no longer pending.');
-      }
-
       transfer.status = 'rejected';
+      transfer.execution_status = 'failed';
       transfer.rejected_by = adminId;
       transfer.rejected_at = now;
       transfer.rejection_reason = reason;
       transfer.admin_notes = input?.admin_notes || null;
       transfer.updated_at = now;
+
+      if (pool) {
+        await query(
+          `UPDATE account_transfers 
+           SET status = 'rejected', execution_status = 'failed', rejected_by = $1, rejected_at = $2, rejection_reason = $3, admin_notes = $4, updated_at = $5
+           WHERE id = $6 AND status = 'pending'`,
+          [adminId, now, reason, input?.admin_notes || null, now, transfer.id]
+        );
+      } else {
+        inMemoryDb.accountTransfers.set(transfer.id, transfer);
+      }
     }
 
     await this.recordAuditLog(
@@ -2059,6 +2731,179 @@ export class FinancialService {
       }
     );
 
-    return { transfer };
+    const updatedWallet = await this.getOrCreateWallet(transfer.user_id, transfer.currency);
+    return { transfer, wallet: updatedWallet };
+  }
+
+  /**
+   * CLIENT: Cancels a pending transfer request created by the authenticated user.
+   * If wallet_to_trading: Releases reserved wallet balance and appends transfer_release ledger transaction.
+   */
+  public static async cancelAccountTransfer(
+    transferId: string,
+    userId: string,
+    isAdmin: boolean = false,
+    ip?: string,
+    userAgent?: string
+  ): Promise<{ transfer: AccountTransferRecord; wallet: WalletWithAvailable }> {
+    const pool = getPool();
+    let transfer: AccountTransferRecord | null = null;
+
+    if (pool) {
+      const rows = await query<AccountTransferRecord>('SELECT * FROM account_transfers WHERE id = $1', [transferId]);
+      transfer = rows[0] || null;
+    } else {
+      transfer = inMemoryDb.accountTransfers.get(transferId) || null;
+    }
+
+    if (!transfer) {
+      const err: any = new Error(`Transfer request "${transferId}" not found`);
+      err.statusCode = 404;
+      throw err;
+    }
+
+    // Strict IDOR unless admin
+    if (!isAdmin && transfer.user_id !== userId) {
+      const err: any = new Error('Access denied: You do not own this transfer request');
+      err.statusCode = 403;
+      throw err;
+    }
+
+    if (transfer.status !== 'pending') {
+      const err: any = new Error(`Cannot cancel transfer in "${transfer.status}" status. Only pending transfers can be cancelled.`);
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const now = new Date();
+    const wallet = await this.getOrCreateWallet(transfer.user_id, transfer.currency);
+
+    if (transfer.direction === 'wallet_to_trading') {
+      // Release the reserved balance
+      const transferAmountDec = toDecimal(transfer.amount);
+      const walletBalDec = toDecimal(wallet.balance);
+      const resBeforeDec = toDecimal(wallet.reserved_balance);
+      const resAfterDec = resBeforeDec.minus(transferAmountDec);
+
+      if (resAfterDec.isNegative()) {
+        throw new Error('Invariant violation: Reserved balance cannot be negative on release');
+      }
+
+      const balStr = formatMoney(walletBalDec);
+      const resBeforeStr = formatMoney(resBeforeDec);
+      const resAfterStr = formatMoney(resAfterDec);
+
+      const txnNo = this.generateReference('TXN');
+      const txnId = crypto.randomUUID();
+
+      const transactionRecord: TransactionRecord = {
+        id: txnId,
+        transaction_no: txnNo,
+        user_id: transfer.user_id,
+        wallet_id: wallet.id,
+        type: 'transfer_release',
+        amount: transfer.amount,
+        currency: wallet.currency,
+        balance_before: balStr,
+        balance_after: balStr,
+        reserved_before: resBeforeStr,
+        reserved_after: resAfterStr,
+        status: 'completed',
+        reference_type: 'account_transfer',
+        reference_id: transfer.id,
+        description: `Reserved funds released on client cancellation [Ref: ${transfer.reference_no}]`,
+        created_at: now,
+      };
+
+      transfer.status = 'cancelled';
+      transfer.execution_status = 'unexecuted';
+      transfer.rejection_reason = 'Cancelled by client';
+      transfer.updated_at = now;
+
+      if (pool) {
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+          await client.query(
+            `UPDATE account_transfers 
+             SET status = 'cancelled', execution_status = 'unexecuted', rejection_reason = 'Cancelled by client', updated_at = $1
+             WHERE id = $2 AND status = 'pending'`,
+            [now, transfer.id]
+          );
+          await client.query(
+            `UPDATE wallets SET reserved_balance = $1, updated_at = $2 WHERE id = $3`,
+            [resAfterStr, now, wallet.id]
+          );
+          await client.query(
+            `INSERT INTO transactions (id, transaction_no, user_id, wallet_id, type, amount, currency, balance_before, balance_after, reserved_before, reserved_after, status, reference_type, reference_id, description, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+            [
+              transactionRecord.id,
+              transactionRecord.transaction_no,
+              transactionRecord.user_id,
+              transactionRecord.wallet_id,
+              transactionRecord.type,
+              transactionRecord.amount,
+              transactionRecord.currency,
+              transactionRecord.balance_before,
+              transactionRecord.balance_after,
+              transactionRecord.reserved_before,
+              transactionRecord.reserved_after,
+              transactionRecord.status,
+              transactionRecord.reference_type,
+              transactionRecord.reference_id,
+              transactionRecord.description,
+              transactionRecord.created_at,
+            ]
+          );
+          await client.query('COMMIT');
+        } catch (dbErr) {
+          await client.query('ROLLBACK');
+          throw dbErr;
+        } finally {
+          client.release();
+        }
+      } else {
+        wallet.reserved_balance = resAfterStr;
+        wallet.updated_at = now;
+        inMemoryDb.wallets.set(wallet.id, wallet);
+        inMemoryDb.wallets.set(`${wallet.user_id}_${wallet.currency}`, wallet);
+        inMemoryDb.accountTransfers.set(transfer.id, transfer);
+        inMemoryDb.transactions.unshift(transactionRecord);
+      }
+    } else {
+      transfer.status = 'cancelled';
+      transfer.execution_status = 'unexecuted';
+      transfer.rejection_reason = 'Cancelled by client';
+      transfer.updated_at = now;
+
+      if (pool) {
+        await query(
+          `UPDATE account_transfers 
+           SET status = 'cancelled', execution_status = 'unexecuted', rejection_reason = 'Cancelled by client', updated_at = $1
+           WHERE id = $2 AND status = 'pending'`,
+          [now, transfer.id]
+        );
+      } else {
+        inMemoryDb.accountTransfers.set(transfer.id, transfer);
+      }
+    }
+
+    await this.recordAuditLog(
+      userId,
+      'TRANSFER_CANCELLED',
+      'account_transfer',
+      transfer.id,
+      {
+        reference_no: transfer.reference_no,
+        direction: transfer.direction,
+        amount: transfer.amount,
+      },
+      ip,
+      userAgent
+    );
+
+    const updatedWallet = await this.getOrCreateWallet(transfer.user_id, transfer.currency);
+    return { transfer, wallet: updatedWallet };
   }
 }

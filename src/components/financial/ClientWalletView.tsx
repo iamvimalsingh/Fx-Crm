@@ -107,7 +107,10 @@ export interface AccountTransferRecord {
   direction: 'wallet_to_trading' | 'trading_to_wallet';
   amount: string;
   currency: string;
-  status: 'pending' | 'approved' | 'rejected';
+  status: 'pending' | 'approved' | 'rejected' | 'completed' | 'failed' | 'cancelled';
+  execution_status?: 'unexecuted' | 'executing' | 'confirmed' | 'failed';
+  external_transaction_id?: string;
+  executed_at?: string;
   client_notes?: string;
   admin_notes?: string;
   rejection_reason?: string;
@@ -348,6 +351,31 @@ export function ClientWalletView() {
     }
   };
 
+  // Cancel Pending Transfer
+  const handleCancelTransfer = async (transferId: string) => {
+    if (!token) return;
+    if (!window.confirm('Cancel this pending transfer request? Reserved wallet funds will be restored immediately.')) {
+      return;
+    }
+    try {
+      setRefreshing(true);
+      const res = await fetch(`/api/financial/transfers/${transferId}/cancel`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const result = await parseApiResponse(res);
+      if (!result.ok) {
+        throw new Error(result.message || 'Failed to cancel transfer');
+      }
+      setSuccessMessage('Transfer cancelled. Reserved funds returned to your available balance.');
+      fetchData();
+      setTimeout(() => setSuccessMessage(null), 4000);
+    } catch (err: any) {
+      setError(err.message);
+      setRefreshing(false);
+    }
+  };
+
   const selectedDepositMethod = paymentMethods.find((p) => p.id === depMethodId);
   const selectedWithdrawalMethod = paymentMethods.find((p) => p.id === wthMethodId);
 
@@ -553,16 +581,16 @@ export function ClientWalletView() {
 
           <div className="bg-[#182030] border border-[#26334d] rounded-xl p-4">
             <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1 flex items-center justify-between">
-              <span>Total Wallet Equity</span>
+              <span>Total Wallet Balance</span>
               <span className="text-[10px] bg-slate-700/50 text-slate-300 px-1.5 py-0.5 rounded">
-                Sum
+                Authoritative Cash
               </span>
             </div>
             <div className="text-2xl font-bold text-white font-mono">
               ${wallet?.balance || '0.00'}
             </div>
             <p className="text-[11px] text-slate-400 mt-2">
-              Total holdings across available and pending reserved funds.
+              Total customer cash across available and pending reserved funds.
             </p>
           </div>
         </div>
@@ -1027,6 +1055,7 @@ export function ClientWalletView() {
                           <th className="py-2.5 px-3">Status</th>
                           <th className="py-2.5 px-3">Date</th>
                           <th className="py-2.5 px-3">Notes / Reason</th>
+                          <th className="py-2.5 px-3 text-right">Action</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-[#1e273a]">
@@ -1055,12 +1084,17 @@ export function ClientWalletView() {
                             <td className="py-2.5 px-3">
                               {trf.status === 'pending' && (
                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[10px] font-semibold">
-                                  <Clock className="w-3 h-3" /> Pending Review
+                                  <Clock className="w-3 h-3" /> Funds Reserved (Pending Review)
                                 </span>
                               )}
-                              {trf.status === 'approved' && (
+                              {trf.status === 'approved' && (trf as any).execution_status === 'executing' && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 text-[10px] font-semibold animate-pulse">
+                                  <RefreshCw className="w-3 h-3 animate-spin" /> Engine Executing
+                                </span>
+                              )}
+                              {(trf.status === 'completed' || (trf as any).execution_status === 'confirmed' || (trf.status === 'approved' && !(trf as any).execution_status)) && (
                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-semibold">
-                                  <CheckCircle2 className="w-3 h-3" /> Approved & Executed
+                                  <CheckCircle2 className="w-3 h-3" /> Confirmed & Completed
                                 </span>
                               )}
                               {trf.status === 'rejected' && (
@@ -1068,7 +1102,20 @@ export function ClientWalletView() {
                                   title={trf.rejection_reason || 'Rejected by finance'}
                                   className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/20 text-[10px] font-semibold cursor-help"
                                 >
-                                  <XCircle className="w-3 h-3" /> Rejected
+                                  <XCircle className="w-3 h-3" /> Rejected (Funds Released)
+                                </span>
+                              )}
+                              {((trf as any).execution_status === 'failed' || trf.status === 'failed') && (
+                                <span
+                                  title={trf.rejection_reason || 'Execution failed'}
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20 text-[10px] font-semibold cursor-help"
+                                >
+                                  <XCircle className="w-3 h-3" /> Failed
+                                </span>
+                              )}
+                              {trf.status === 'cancelled' && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-700/40 text-slate-400 border border-slate-700 text-[10px] font-semibold">
+                                  Cancelled
                                 </span>
                               )}
                             </td>
@@ -1076,6 +1123,11 @@ export function ClientWalletView() {
                               {new Date(trf.created_at).toLocaleString()}
                             </td>
                             <td className="py-2.5 px-3 text-slate-400 max-w-xs truncate">
+                              {(trf as any).external_transaction_id && (
+                                <span className="block font-mono text-[10px] text-cyan-300">
+                                  Ref: {(trf as any).external_transaction_id}
+                                </span>
+                              )}
                               {trf.status === 'rejected' && trf.rejection_reason ? (
                                 <span className="text-rose-300">{trf.rejection_reason}</span>
                               ) : trf.admin_notes ? (
@@ -1084,6 +1136,19 @@ export function ClientWalletView() {
                                 <span className="text-slate-400">{trf.client_notes}</span>
                               ) : (
                                 '—'
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 text-right">
+                              {trf.status === 'pending' ? (
+                                <button
+                                  type="button"
+                                  onClick={() => handleCancelTransfer(trf.id)}
+                                  className="px-2 py-1 rounded bg-slate-800 hover:bg-rose-950/40 text-slate-300 hover:text-rose-300 border border-slate-700 hover:border-rose-500/40 text-[10px] font-semibold transition"
+                                >
+                                  Cancel
+                                </button>
+                              ) : (
+                                <span className="text-[10px] text-slate-600">Settled</span>
                               )}
                             </td>
                           </tr>

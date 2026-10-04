@@ -63,7 +63,10 @@ interface AccountTransferRecord {
   direction: 'wallet_to_trading' | 'trading_to_wallet';
   amount: string;
   currency: string;
-  status: 'pending' | 'approved' | 'rejected';
+  status: 'pending' | 'approved' | 'rejected' | 'completed' | 'failed' | 'cancelled';
+  execution_status?: 'unexecuted' | 'executing' | 'confirmed' | 'failed';
+  external_transaction_id?: string;
+  executed_at?: string;
   client_notes?: string;
   admin_notes?: string;
   rejection_reason?: string;
@@ -141,7 +144,15 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
 
   // Approval / Rejection Action Modals
   const [actionItem, setActionItem] = useState<{
-    type: 'approve_deposit' | 'reject_deposit' | 'approve_withdrawal' | 'reject_withdrawal' | 'approve_transfer' | 'reject_transfer';
+    type:
+      | 'approve_deposit'
+      | 'reject_deposit'
+      | 'approve_withdrawal'
+      | 'reject_withdrawal'
+      | 'approve_transfer'
+      | 'reject_transfer'
+      | 'confirm_execution'
+      | 'fail_execution';
     id: string;
     reference: string;
     amount: string;
@@ -149,6 +160,7 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
   } | null>(null);
   const [adminNotes, setAdminNotes] = useState('');
   const [rejectionReason, setRejectionReason] = useState('');
+  const [externalTxnId, setExternalTxnId] = useState('');
   const [submittingAction, setSubmittingAction] = useState(false);
 
   // Manual Adjustment Form
@@ -232,6 +244,14 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
         if (!rejectionReason.trim()) throw new Error('Rejection reason is strictly required');
         endpoint = `/api/financial/admin/transfers/${actionItem.id}/reject`;
         payload = { rejection_reason: rejectionReason, admin_notes: adminNotes || null };
+      } else if (actionItem.type === 'confirm_execution') {
+        if (!externalTxnId.trim()) throw new Error('External Transaction ID is strictly required');
+        endpoint = `/api/financial/admin/transfers/${actionItem.id}/confirm-execution`;
+        payload = { external_transaction_id: externalTxnId.trim(), execution_notes: adminNotes || null };
+      } else if (actionItem.type === 'fail_execution') {
+        if (!rejectionReason.trim()) throw new Error('Failure reason is strictly required');
+        endpoint = `/api/financial/admin/transfers/${actionItem.id}/fail-execution`;
+        payload = { failure_reason: rejectionReason.trim(), admin_notes: adminNotes || null };
       }
 
       const res = await fetch(endpoint, {
@@ -960,9 +980,14 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
                                   <Clock className="w-3 h-3" /> Pending Review
                                 </span>
                               )}
-                              {trf.status === 'approved' && (
+                              {trf.status === 'approved' && trf.execution_status === 'executing' && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 text-[10px] font-semibold animate-pulse">
+                                  <RefreshCw className="w-3 h-3 animate-spin" /> Engine Executing
+                                </span>
+                              )}
+                              {(trf.status === 'completed' || trf.execution_status === 'confirmed') && (
                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-semibold">
-                                  <Check className="w-3 h-3" /> Executed
+                                  <Check className="w-3 h-3" /> Confirmed
                                 </span>
                               )}
                               {trf.status === 'rejected' && (
@@ -973,11 +998,29 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
                                   <X className="w-3 h-3" /> Rejected
                                 </span>
                               )}
+                              {(trf.status === 'failed' || trf.execution_status === 'failed') && (
+                                <span
+                                  title={trf.rejection_reason || 'Execution failed'}
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20 text-[10px] font-semibold cursor-help"
+                                >
+                                  <X className="w-3 h-3" /> Execution Failed
+                                </span>
+                              )}
+                              {trf.status === 'cancelled' && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-700/40 text-slate-400 border border-slate-700 text-[10px] font-semibold">
+                                  Cancelled
+                                </span>
+                              )}
                             </td>
                             <td className="py-2.5 px-3 text-slate-400 font-mono text-[10px]">
                               {new Date(trf.created_at).toLocaleString()}
                             </td>
                             <td className="py-2.5 px-3 text-slate-400 max-w-xs truncate">
+                              {trf.external_transaction_id && (
+                                <span className="block font-mono text-[10px] text-cyan-300">
+                                  Ext: {trf.external_transaction_id}
+                                </span>
+                              )}
                               {trf.status === 'rejected' && trf.rejection_reason ? (
                                 <span className="text-rose-300 font-medium">{trf.rejection_reason}</span>
                               ) : trf.admin_notes ? (
@@ -1003,7 +1046,7 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
                                     }
                                     className="px-2 py-1 rounded bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/20 text-[11px] font-semibold transition"
                                   >
-                                    Approve & Execute
+                                    Approve
                                   </button>
                                   <button
                                     onClick={() =>
@@ -1018,6 +1061,37 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
                                     className="px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 text-[11px] font-semibold transition"
                                   >
                                     Reject
+                                  </button>
+                                </div>
+                              ) : trf.status === 'approved' && trf.execution_status === 'executing' ? (
+                                <div className="flex items-center justify-end gap-2">
+                                  <button
+                                    onClick={() =>
+                                      setActionItem({
+                                        type: 'confirm_execution',
+                                        id: trf.id,
+                                        reference: trf.reference_no,
+                                        amount: trf.amount,
+                                        direction: trf.direction,
+                                      })
+                                    }
+                                    className="px-2 py-1 rounded bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/20 text-[11px] font-semibold transition"
+                                  >
+                                    Confirm Execution
+                                  </button>
+                                  <button
+                                    onClick={() =>
+                                      setActionItem({
+                                        type: 'fail_execution',
+                                        id: trf.id,
+                                        reference: trf.reference_no,
+                                        amount: trf.amount,
+                                        direction: trf.direction,
+                                      })
+                                    }
+                                    className="px-2 py-1 rounded bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/20 text-[11px] font-semibold transition"
+                                  >
+                                    Fail
                                   </button>
                                 </div>
                               ) : (
@@ -1322,7 +1396,7 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
           <div className="bg-[#161b22] border border-[#30363d] rounded-2xl max-w-md w-full p-6 space-y-4">
             <div className="flex items-center justify-between border-b border-[#30363d] pb-3">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                {actionItem.type.startsWith('approve') ? (
+                {actionItem.type.startsWith('approve') || actionItem.type === 'confirm_execution' ? (
                   <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                 ) : (
                   <XCircle className="w-4 h-4 text-rose-400" />
@@ -1332,8 +1406,10 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
                   {actionItem.type === 'reject_deposit' && 'Reject Deposit Request'}
                   {actionItem.type === 'approve_withdrawal' && 'Confirm Payout Dispatch'}
                   {actionItem.type === 'reject_withdrawal' && 'Reject & Release Reserved Funds'}
-                  {actionItem.type === 'approve_transfer' && 'Approve & Execute Internal Transfer'}
+                  {actionItem.type === 'approve_transfer' && 'Approve Internal Transfer'}
                   {actionItem.type === 'reject_transfer' && 'Reject Internal Transfer Request'}
+                  {actionItem.type === 'confirm_execution' && 'Confirm Trading Engine Execution'}
+                  {actionItem.type === 'fail_execution' && 'Record Execution Failure & Reconcile'}
                 </span>
               </h3>
               <button
@@ -1364,17 +1440,37 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
             </div>
 
             <form onSubmit={handleExecuteReviewAction} className="space-y-4 text-xs">
-              {actionItem.type.startsWith('reject') && (
+              {actionItem.type === 'confirm_execution' && (
                 <div>
                   <label className="block text-slate-300 font-semibold mb-1">
-                    Rejection Reason <span className="text-rose-400">*</span>
+                    Trading Engine External Transaction ID <span className="text-cyan-400">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={externalTxnId}
+                    onChange={(e) => setExternalTxnId(e.target.value)}
+                    placeholder="e.g. TE-TXN-90281 or Engine Order Ref"
+                    className="w-full bg-[#161b22] border border-[#30363d] rounded-lg p-2 text-white font-mono text-xs focus:outline-none focus:border-cyan-500"
+                  />
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    Authoritative execution identifier from Trading Engine runtime.
+                  </p>
+                </div>
+              )}
+
+              {(actionItem.type.startsWith('reject') || actionItem.type === 'fail_execution') && (
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1">
+                    {actionItem.type === 'fail_execution' ? 'Failure Reason' : 'Rejection Reason'}{' '}
+                    <span className="text-rose-400">*</span>
                   </label>
                   <textarea
                     rows={2}
                     required
                     value={rejectionReason}
                     onChange={(e) => setRejectionReason(e.target.value)}
-                    placeholder="e.g. Sender bank name discrepancy, invalid destination address, or KYC requirements not met"
+                    placeholder="e.g. Insufficient margin on engine, invalid account, or network timeout"
                     className="w-full bg-[#161b22] border border-[#30363d] rounded-lg p-2 text-white text-xs focus:outline-none focus:border-rose-500"
                   />
                 </div>
@@ -1388,7 +1484,7 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
                   type="text"
                   value={adminNotes}
                   onChange={(e) => setAdminNotes(e.target.value)}
-                  placeholder="e.g. Escrow cleared / transaction batch ID #992"
+                  placeholder="e.g. Executed via bridge batch #4401"
                   className="w-full bg-[#161b22] border border-[#30363d] rounded-lg p-2 text-white text-xs focus:outline-none focus:border-blue-500"
                 />
               </div>
@@ -1405,13 +1501,19 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
                   type="submit"
                   disabled={submittingAction}
                   className={`px-4 py-2 rounded-lg text-white text-xs font-semibold flex items-center gap-1.5 shadow ${
-                    actionItem.type.startsWith('approve')
+                    actionItem.type.startsWith('approve') || actionItem.type === 'confirm_execution'
                       ? 'bg-emerald-600 hover:bg-emerald-500'
                       : 'bg-rose-600 hover:bg-rose-500'
                   }`}
                 >
                   {submittingAction ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-                  <span>Confirm Execution</span>
+                  <span>
+                    {actionItem.type === 'confirm_execution'
+                      ? 'Confirm & Settle'
+                      : actionItem.type === 'fail_execution'
+                      ? 'Record Failure & Refund'
+                      : 'Confirm Action'}
+                  </span>
                 </button>
               </div>
             </form>

@@ -121,7 +121,9 @@ export interface TransactionRecord {
     | 'adjustment_credit'
     | 'adjustment_debit'
     | 'transfer_in'
-    | 'transfer_out';
+    | 'transfer_out'
+    | 'transfer_reserve'
+    | 'transfer_release';
   amount: string; // Decimal string
   currency: string;
   balance_before: string;
@@ -261,7 +263,11 @@ export interface AccountTransferRecord {
   direction: 'wallet_to_trading' | 'trading_to_wallet';
   amount: string; // Exact decimal string
   currency: string;
-  status: 'pending' | 'approved' | 'rejected';
+  status: 'pending' | 'approved' | 'rejected' | 'completed' | 'failed' | 'cancelled';
+  execution_status?: 'unexecuted' | 'executing' | 'confirmed' | 'failed';
+  external_transaction_id?: string | null;
+  executed_at?: Date | null;
+  idempotency_key?: string | null;
   client_notes?: string | null;
   admin_notes?: string | null;
   approved_by?: string | null;

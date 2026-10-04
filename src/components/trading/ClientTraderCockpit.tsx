@@ -846,7 +846,7 @@ export function ClientTraderCockpit({
             ${wallet?.available_balance || (wallet ? (parseFloat(wallet.balance) - parseFloat(wallet.reserved_balance)).toFixed(2) : '0.00')}
           </div>
           <div className="mt-2 text-[11px] text-slate-400 flex items-center justify-between">
-            <span>Free for Withdrawal</span>
+            <span>Free for Withdrawal / Transfers</span>
             <span className="text-emerald-400 font-semibold font-mono">Unencumbered</span>
           </div>
         </div>
@@ -863,7 +863,7 @@ export function ClientTraderCockpit({
             ${wallet?.reserved_balance || '0.00'}
           </div>
           <div className="mt-2 text-[11px] text-slate-400 flex items-center justify-between">
-            <span>Pending Payouts</span>
+            <span>Pending Payouts & Transfers</span>
             <span className="text-slate-300 font-medium">
               {parseFloat(wallet?.reserved_balance || '0') > 0 ? 'Active Hold' : 'No Holds'}
             </span>

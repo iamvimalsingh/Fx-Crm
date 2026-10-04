@@ -87,6 +87,7 @@ export const CreateDepositSchema = z.object({
     )
     .optional()
     .nullable(),
+  idempotency_key: z.string().max(100).optional().nullable(),
 });
 
 export const ApproveDepositSchema = z.object({
@@ -111,6 +112,7 @@ export const CreateWithdrawalSchema = z.object({
     message: 'Payout destination details (bank info or wallet address) are required',
   }),
   client_notes: z.string().max(500).optional().nullable(),
+  idempotency_key: z.string().max(100).optional().nullable(),
 });
 
 export const ApproveWithdrawalSchema = z.object({
@@ -156,6 +158,7 @@ export const CreateAccountTransferSchema = z.object({
     }),
   currency: z.string().optional().default('USD'),
   client_notes: z.string().max(500).optional().nullable(),
+  idempotency_key: z.string().max(100).optional().nullable(),
 });
 
 export const ApproveAccountTransferSchema = z.object({
@@ -167,9 +170,22 @@ export const RejectAccountTransferSchema = z.object({
   admin_notes: z.string().max(500).optional().nullable(),
 });
 
+export const ConfirmExecutionSchema = z.object({
+  external_transaction_id: z.string().min(1, 'External transaction reference is required').max(100),
+  execution_amount: z.string().optional(),
+  execution_notes: z.string().max(500).optional().nullable(),
+});
+
+export const FailExecutionSchema = z.object({
+  failure_reason: z.string().min(1, 'Failure reason is required').max(500),
+  admin_notes: z.string().max(500).optional().nullable(),
+});
+
 export type CreateAccountTransferInput = z.input<typeof CreateAccountTransferSchema>;
 export type ApproveAccountTransferInput = z.infer<typeof ApproveAccountTransferSchema>;
 export type RejectAccountTransferInput = z.infer<typeof RejectAccountTransferSchema>;
+export type ConfirmExecutionInput = z.infer<typeof ConfirmExecutionSchema>;
+export type FailExecutionInput = z.infer<typeof FailExecutionSchema>;
 
 // Trading Account Registry Schemas (Strictly isolated from financial ledger)
 export const RegisterTradingAccountSchema = z.object({

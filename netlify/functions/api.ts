@@ -37,6 +37,8 @@ import {
   CreateAccountTransferSchema,
   ApproveAccountTransferSchema,
   RejectAccountTransferSchema,
+  ConfirmExecutionSchema,
+  FailExecutionSchema,
   RegisterTradingAccountSchema,
   LinkTradingAccountSchema,
   UpdateTradingAccountNicknameSchema,
@@ -900,6 +902,26 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
     }
 
     // -------------------------------------------------------------------------
+    // POST /api/financial/transfers/:id/cancel (Client or Admin cancels pending transfer)
+    // -------------------------------------------------------------------------
+    const cancelTrfMatch = path.match(/^\/financial\/transfers\/([^/]+)\/cancel$/);
+    if (cancelTrfMatch && event.httpMethod === 'POST' && authUser) {
+      const transferId = cancelTrfMatch[1];
+      const result = await FinancialService.cancelAccountTransfer(
+        transferId,
+        authUser.id,
+        authUser.role === 'admin',
+        clientIp,
+        userAgent
+      );
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'success', data: result }),
+      };
+    }
+
+    // -------------------------------------------------------------------------
     // ADMIN ONLY FINANCIAL ROUTES (Require role: 'admin')
     // -------------------------------------------------------------------------
     if (path.startsWith('/financial/admin/')) {
@@ -988,6 +1010,34 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
         const body = parseRequestBody(event.body);
         const validated = RejectAccountTransferSchema.parse(body);
         const result = await FinancialService.rejectAccountTransfer(transferId, authUser.id, validated, clientIp, userAgent);
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'success', data: result }),
+        };
+      }
+
+      // POST /api/financial/admin/transfers/:id/confirm-execution
+      const confirmExecMatch = path.match(/^\/financial\/admin\/transfers\/([^/]+)\/confirm-execution$/);
+      if (confirmExecMatch && event.httpMethod === 'POST') {
+        const transferId = confirmExecMatch[1];
+        const body = parseRequestBody(event.body);
+        const validated = ConfirmExecutionSchema.parse(body);
+        const result = await FinancialService.confirmExecution(transferId, authUser.id, validated, clientIp, userAgent);
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'success', data: result }),
+        };
+      }
+
+      // POST /api/financial/admin/transfers/:id/fail-execution
+      const failExecMatch = path.match(/^\/financial\/admin\/transfers\/([^/]+)\/fail-execution$/);
+      if (failExecMatch && event.httpMethod === 'POST') {
+        const transferId = failExecMatch[1];
+        const body = parseRequestBody(event.body);
+        const validated = FailExecutionSchema.parse(body);
+        const result = await FinancialService.failExecution(transferId, authUser.id, validated, clientIp, userAgent);
         return {
           statusCode: 200,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },

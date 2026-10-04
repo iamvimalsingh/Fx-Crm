@@ -152,7 +152,7 @@ async function runForensicVerification() {
     assert(approvalRes.transfer.status === 'approved', 'Transfer status transitioned to approved');
     assert(approvalRes.transfer.approved_by === adminUser.id, 'Approved by recorded with admin ID');
     assert(approvalRes.wallet.balance === '700.00', 'Wallet balance debited exactly $300.00 -> $700.00');
-    assert(approvalRes.trading_account.balance === '550.00', 'Trading account credited exactly $300.00 -> $550.00');
+    assert(approvalRes.trading_account.balance === '250.00', 'CRM does not directly mutate Trading Engine balance');
 
     // 1.3 Immutable Ledger Entry
     assert(approvalRes.transaction.type === 'transfer_out', 'Ledger transaction type is transfer_out');
@@ -190,7 +190,7 @@ async function runForensicVerification() {
     const walletCheck1 = await FinancialService.getOrCreateWallet(clientA.id, 'USD');
     const accCheck1 = await TradingAccountService.findRawAccount(tradingAccA.id);
     assert(walletCheck1.balance === '700.00', 'Wallet balance still strictly $700.00 (no double debit)');
-    assert(accCheck1?.balance === '550.00', 'Trading account balance still strictly $550.00 (no double credit)');
+    assert(accCheck1?.balance === '250.00', 'Trading account balance untouched by CRM');
 
     // =========================================================================
     // SECTION 2: TRADING ACCOUNT -> WALLET LIFECYCLE FORENSIC TRACE
@@ -211,7 +211,7 @@ async function runForensicVerification() {
     const walletCheck2 = await FinancialService.getOrCreateWallet(clientA.id, 'USD');
     const accCheck2 = await TradingAccountService.findRawAccount(tradingAccA.id);
     assert(walletCheck2.balance === '700.00', 'Wallet balance untouched upon T2W creation');
-    assert(accCheck2?.balance === '550.00', 'Trading account balance untouched upon T2W creation');
+    assert(accCheck2?.balance === '250.00', 'Trading account balance untouched upon T2W creation');
 
     // 2.2 Admin Approval
     const approvalT2W = await FinancialService.approveAccountTransfer(transferT2W.id, adminUser.id, {
@@ -219,13 +219,20 @@ async function runForensicVerification() {
     });
 
     assert(approvalT2W.transfer.status === 'approved', 'T2W transfer status is approved');
-    assert(approvalT2W.trading_account.balance === '400.00', 'Trading account debited $150.00 -> $400.00');
-    assert(approvalT2W.wallet.balance === '850.00', 'Wallet credited $150.00 -> $850.00');
+    assert(approvalT2W.transfer.execution_status === 'executing', 'T2W execution status is executing');
+    assert(approvalT2W.trading_account.balance === '250.00', 'Trading account runtime balance managed by engine');
+    assert(approvalT2W.wallet.balance === '700.00', 'Wallet not credited until execution confirmed');
 
-    // 2.3 Ledger Transaction Record
-    assert(approvalT2W.transaction.type === 'transfer_in', 'Ledger transaction type is transfer_in');
-    assert(approvalT2W.transaction.balance_before === '700.00', 'Ledger records correct balance_before: 700.00');
-    assert(approvalT2W.transaction.balance_after === '850.00', 'Ledger records correct balance_after: 850.00');
+    // 2.3 Confirm External Engine Execution
+    const confirmT2W = await FinancialService.confirmExecution(transferT2W.id, adminUser.id, {
+      external_transaction_id: 'TE-TXN-150-PROFIT',
+      execution_notes: 'Engine execution confirmed',
+    });
+    assert(confirmT2W.transfer.status === 'completed', 'T2W transfer completed upon engine confirmation');
+    assert(confirmT2W.wallet.balance === '850.00', 'Wallet credited $150.00 -> $850.00 upon confirmation');
+    assert(confirmT2W.transaction?.type === 'transfer_in', 'Ledger transaction type is transfer_in');
+    assert(confirmT2W.transaction?.balance_before === '700.00', 'Ledger records correct balance_before: 700.00');
+    assert(confirmT2W.transaction?.balance_after === '850.00', 'Ledger records correct balance_after: 850.00');
 
     // =========================================================================
     // SECTION 3: REJECTION WORKFLOW FORENSIC TRACE
@@ -355,8 +362,8 @@ async function runForensicVerification() {
     const preciseApproval = await FinancialService.approveAccountTransfer(preciseTransfer.id, adminUser.id);
     // Wallet was 850.00, 850.00 - 123.45 = 726.55
     assert(preciseApproval.wallet.balance === '726.55', 'Exact decimal calculation on wallet: 850.00 - 123.45 = 726.55');
-    // Account was 400.00, 400.00 + 123.45 = 523.45
-    assert(preciseApproval.trading_account.balance === '523.45', 'Exact decimal calculation on trading account: 400.00 + 123.45 = 523.45');
+    // Trading Engine balance remains untouched by CRM
+    assert(preciseApproval.trading_account.balance === '250.00', 'Trading account balance untouched by CRM during wallet_to_trading approval');
 
     // =========================================================================
     // SECTION 5: PAYMENT METHOD & MANUAL DEPOSIT VERIFICATION
