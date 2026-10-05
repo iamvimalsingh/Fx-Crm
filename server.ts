@@ -3,6 +3,7 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { handler as netlifyApiHandler } from './netlify/functions/api';
+import { adminTradingRouter } from './src/trading-engine/routes/admin.routes';
 
 async function startServer() {
   const app = express();
@@ -10,6 +11,9 @@ async function startServer() {
 
   app.use(express.json({ limit: '15mb' }));
   app.use(express.urlencoded({ extended: true, limit: '15mb' }));
+
+  // Mount Trading Engine Operations Control Center Backend (Step 3)
+  app.use('/api/v1/admin/trading', adminTradingRouter);
 
   // 1. API Route Handler (MUST BE BEFORE VITE / STATIC MIDDLEWARES, NEVER CALLS next())
   app.all(['/api', '/api/*'], async (req, res) => {
