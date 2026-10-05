@@ -159,6 +159,7 @@ export const CreateAccountTransferSchema = z.object({
   currency: z.string().optional().default('USD'),
   client_notes: z.string().max(500).optional().nullable(),
   idempotency_key: z.string().max(100).optional().nullable(),
+  auto_execute: z.boolean().optional().default(true),
 });
 
 export const ApproveAccountTransferSchema = z.object({

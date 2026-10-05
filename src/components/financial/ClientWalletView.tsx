@@ -446,6 +446,7 @@ export function ClientWalletView() {
           amount: transferAmount,
           currency: wallet?.currency || selectedTradingAccount?.currency || 'USD',
           client_notes: transferNotes || null,
+          auto_execute: true,
         }),
       });
 
@@ -454,9 +455,15 @@ export function ClientWalletView() {
         throw new Error(result.message || 'Transfer request failed');
       }
 
-      setSuccessMessage(
-        `Transfer request #${result.data?.reference_no} submitted. Funds transfer is queued for financial review and approval.`
-      );
+      if (result.data?.status === 'completed') {
+        setSuccessMessage(
+          `Internal transfer #${result.data?.reference_no} completed instantly! $${transferAmount} transferred between Wallet and Trading Account #${selectedTradingAccount?.account_number}. Trading balance updated in real time.`
+        );
+      } else {
+        setSuccessMessage(
+          `Transfer request #${result.data?.reference_no} submitted. Funds transfer is queued for execution.`
+        );
+      }
       setTransferAmount('');
       setTransferNotes('');
       fetchData();
@@ -1003,9 +1010,9 @@ export function ClientWalletView() {
 
                     <div className="space-y-3 text-xs text-slate-300">
                       <div className="p-3 rounded-lg bg-[#121824] border border-[#26334d] space-y-1">
-                        <div className="font-bold text-cyan-300 text-[11px]">Workflow & Governance</div>
+                        <div className="font-bold text-cyan-300 text-[11px]">Instant Execution & Governance</div>
                         <p className="text-slate-400 text-[11px] leading-relaxed">
-                          All transfers between CRM Wallets and Trading Accounts require Broker Finance review. Once approved, balances are updated atomically and logged to the immutable ledger.
+                          Internal transfers between your CRM Wallet and verified Trading Accounts are processed instantly 24/7 without manual broker intervention. Balances are synchronized in real time.
                         </p>
                       </div>
 

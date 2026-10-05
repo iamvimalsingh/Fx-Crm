@@ -13,6 +13,7 @@ import {
 } from '../db/client';
 import { NotificationService } from './notification.service';
 import { TradingAccountService } from './trading-account.service';
+import { TradingEngineBridgeService } from './trading-engine-bridge.service';
 import {
   toDecimal,
   formatMoney,
@@ -1615,6 +1616,406 @@ export class FinancialService {
       updated_at: now,
     };
 
+    const autoExecute = input.auto_execute === true;
+
+    // =========================================================================
+    // INSTANT / AUTOMATIC INTERNAL TRANSFER PATH (Client Wallet <-> Own Trading Account)
+    // =========================================================================
+    if (autoExecute) {
+      if (input.direction === 'wallet_to_trading') {
+        const availableDec = toDecimal(wallet.available_balance);
+        if (availableDec.lessThan(transferAmount)) {
+          throw new Error(
+            `Insufficient wallet balance. Available: $${wallet.available_balance} ${wallet.currency}, Requested: $${amountStr}`
+          );
+        }
+
+        const walletBalBeforeDec = toDecimal(wallet.balance);
+        const walletBalAfterDec = walletBalBeforeDec.minus(transferAmount);
+        const walletBalBeforeStr = formatMoney(walletBalBeforeDec);
+        const walletBalAfterStr = formatMoney(walletBalAfterDec);
+        const walletResStr = formatMoney(toDecimal(wallet.reserved_balance));
+
+        const txnNo = this.generateReference('TXN');
+        const txnId = crypto.randomUUID();
+
+        const transactionRecord: TransactionRecord = {
+          id: txnId,
+          transaction_no: txnNo,
+          user_id: userId,
+          wallet_id: wallet.id,
+          type: 'transfer_out',
+          amount: amountStr,
+          currency: wallet.currency,
+          balance_before: walletBalBeforeStr,
+          balance_after: walletBalAfterStr,
+          reserved_before: walletResStr,
+          reserved_after: walletResStr,
+          status: 'completed',
+          reference_type: 'account_transfer',
+          reference_id: transferId,
+          description: `Internal transfer to Trading Account #${tradingAccount.account_number} (${tradingAccount.platform}) [Ref: ${referenceNo}]`,
+          created_at: now,
+        };
+
+        if (pool) {
+          const client = await pool.connect();
+          try {
+            await client.query('BEGIN');
+            const lockWallet = await client.query<{ balance: string; reserved_balance: string }>(
+              'SELECT balance, reserved_balance FROM wallets WHERE id = $1 FOR UPDATE',
+              [wallet.id]
+            );
+            if (lockWallet.rows.length === 0) throw new Error('Wallet not found');
+            const liveBal = toDecimal(lockWallet.rows[0].balance);
+            const liveRes = toDecimal(lockWallet.rows[0].reserved_balance);
+            if (liveBal.minus(liveRes).lessThan(transferAmount)) {
+              throw new Error(`Insufficient wallet balance. Available: $${formatMoney(liveBal.minus(liveRes))}`);
+            }
+            await client.query('UPDATE wallets SET balance = $1, updated_at = $2 WHERE id = $3', [
+              formatMoney(liveBal.minus(transferAmount)),
+              now,
+              wallet.id,
+            ]);
+            await client.query(
+              `INSERT INTO transactions (id, transaction_no, user_id, wallet_id, type, amount, currency, balance_before, balance_after, reserved_before, reserved_after, status, reference_type, reference_id, description, created_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+              [
+                transactionRecord.id, transactionRecord.transaction_no, transactionRecord.user_id, transactionRecord.wallet_id,
+                transactionRecord.type, transactionRecord.amount, transactionRecord.currency,
+                transactionRecord.balance_before, transactionRecord.balance_after, transactionRecord.reserved_before,
+                transactionRecord.reserved_after, transactionRecord.status, transactionRecord.reference_type,
+                transactionRecord.reference_id, transactionRecord.description, transactionRecord.created_at,
+              ]
+            );
+            await client.query('COMMIT');
+          } catch (dbErr) {
+            await client.query('ROLLBACK');
+            throw dbErr;
+          } finally {
+            client.release();
+          }
+        } else {
+          wallet.balance = walletBalAfterStr;
+          wallet.updated_at = now;
+          inMemoryDb.wallets.set(wallet.id, wallet);
+          inMemoryDb.wallets.set(`${wallet.user_id}_${wallet.currency}`, wallet);
+          inMemoryDb.transactions.unshift(transactionRecord);
+        }
+
+        // Bridge to Trading Engine Runtime
+        try {
+          const bridgeRes = await TradingEngineBridgeService.creditTradingAccount({
+            accountId: tradingAccount.id,
+            accountNumber: tradingAccount.account_number,
+            amount: transferAmount.toNumber(),
+            currency: wallet.currency,
+            referenceNo: record.reference_no,
+            idempotencyKey: record.idempotency_key || record.reference_no,
+            tenantId: (tradingAccount as any).tenant_id || 'default',
+            adminUserId: userId,
+          });
+
+          record.status = 'completed';
+          record.execution_status = 'confirmed';
+          record.external_transaction_id = bridgeRes.executionId;
+          record.executed_at = new Date(bridgeRes.executedAt || Date.now());
+          record.updated_at = new Date();
+
+          if (pool) {
+            await query(
+              `INSERT INTO account_transfers (
+                id, reference_no, user_id, wallet_id, trading_account_id, direction, amount, currency, status, execution_status, external_transaction_id, executed_at, idempotency_key, client_notes, created_at, updated_at
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+              [
+                record.id, record.reference_no, record.user_id, record.wallet_id, record.trading_account_id,
+                record.direction, record.amount, record.currency, record.status, record.execution_status,
+                record.external_transaction_id, record.executed_at, record.idempotency_key, record.client_notes,
+                record.created_at, record.updated_at,
+              ]
+            );
+          } else {
+            inMemoryDb.accountTransfers.set(record.id, record);
+          }
+
+          // Authoritative sync to CRM cached balance
+          await TradingAccountService.updateAccountBalance(
+            tradingAccount.id,
+            formatMoney(toDecimal(bridgeRes.newBalance))
+          );
+
+          await this.recordAuditLog(
+            userId,
+            'TRANSFER_AUTO_EXECUTED',
+            'account_transfer',
+            record.id,
+            {
+              reference_no: record.reference_no,
+              direction: record.direction,
+              amount: record.amount,
+              currency: record.currency,
+              trading_account_id: tradingAccount.id,
+              account_number: tradingAccount.account_number,
+              external_transaction_id: bridgeRes.executionId,
+              new_balance: bridgeRes.newBalance,
+            },
+            ip,
+            userAgent
+          );
+
+          await NotificationService.createNotification(
+            userId,
+            'Transfer Completed',
+            `Your internal transfer of $${record.amount} ${record.currency} to Trading Account #${tradingAccount.account_number} was executed instantly. Ref: ${record.reference_no}`,
+            'trading_account',
+            {
+              transfer_id: record.id,
+              reference_no: record.reference_no,
+              amount: record.amount,
+              currency: record.currency,
+              direction: record.direction,
+              external_transaction_id: bridgeRes.executionId,
+            }
+          );
+
+          return record;
+        } catch (bridgeErr: any) {
+          // Compensating refund on Trading Engine failure
+          if (pool) {
+            const client = await pool.connect();
+            try {
+              await client.query('BEGIN');
+              await client.query('UPDATE wallets SET balance = balance + $1, updated_at = $2 WHERE id = $3', [
+                amountStr,
+                new Date(),
+                wallet.id,
+              ]);
+              const refundTxnId = crypto.randomUUID();
+              const refundTxnNo = this.generateReference('TXN');
+              await client.query(
+                `INSERT INTO transactions (id, transaction_no, user_id, wallet_id, type, amount, currency, balance_before, balance_after, reserved_before, reserved_after, status, reference_type, reference_id, description, created_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+                [
+                  refundTxnId, refundTxnNo, userId, wallet.id, 'adjustment_credit', amountStr, wallet.currency,
+                  walletBalAfterStr, walletBalBeforeStr, walletResStr, walletResStr,
+                  'completed', 'account_transfer', record.id,
+                  `Compensating refund for failed transfer [Ref: ${record.reference_no}]: ${bridgeErr.message}`,
+                  new Date(),
+                ]
+              );
+              record.status = 'failed';
+              record.execution_status = 'failed';
+              record.rejection_reason = bridgeErr.message || 'Trading Engine credit failed';
+              await client.query(
+                `INSERT INTO account_transfers (
+                  id, reference_no, user_id, wallet_id, trading_account_id, direction, amount, currency, status, execution_status, rejection_reason, idempotency_key, client_notes, created_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+                [
+                  record.id, record.reference_no, record.user_id, record.wallet_id, record.trading_account_id,
+                  record.direction, record.amount, record.currency, record.status, record.execution_status,
+                  record.rejection_reason, record.idempotency_key, record.client_notes,
+                  record.created_at, new Date(),
+                ]
+              );
+              await client.query('COMMIT');
+            } catch (refundErr) {
+              await client.query('ROLLBACK');
+            } finally {
+              client.release();
+            }
+          } else {
+            wallet.balance = walletBalBeforeStr;
+            inMemoryDb.wallets.set(wallet.id, wallet);
+            inMemoryDb.wallets.set(`${wallet.user_id}_${wallet.currency}`, wallet);
+            record.status = 'failed';
+            record.execution_status = 'failed';
+            record.rejection_reason = bridgeErr.message || 'Trading Engine credit failed';
+            inMemoryDb.accountTransfers.set(record.id, record);
+            inMemoryDb.transactions.unshift({
+              id: crypto.randomUUID(),
+              transaction_no: this.generateReference('TXN'),
+              user_id: userId,
+              wallet_id: wallet.id,
+              type: 'adjustment_credit',
+              amount: amountStr,
+              currency: wallet.currency,
+              balance_before: walletBalAfterStr,
+              balance_after: walletBalBeforeStr,
+              reserved_before: walletResStr,
+              reserved_after: walletResStr,
+              status: 'completed',
+              reference_type: 'account_transfer',
+              reference_id: record.id,
+              description: `Compensating refund for failed transfer [Ref: ${record.reference_no}]: ${bridgeErr.message}`,
+              created_at: new Date(),
+            });
+          }
+          throw bridgeErr;
+        }
+      } else if (input.direction === 'trading_to_wallet') {
+        // Step 1: Attempt debit on Trading Engine first (enforces free margin checks)
+        try {
+          const debitRes = await TradingEngineBridgeService.debitTradingAccount({
+            accountId: tradingAccount.id,
+            accountNumber: tradingAccount.account_number,
+            amount: transferAmount.toNumber(),
+            currency: wallet.currency,
+            referenceNo: record.reference_no,
+            idempotencyKey: record.idempotency_key || record.reference_no,
+            tenantId: (tradingAccount as any).tenant_id || 'default',
+            adminUserId: userId,
+          });
+
+          // Debit succeeded! Credit client wallet
+          const walletBalBeforeDec = toDecimal(wallet.balance);
+          const walletBalAfterDec = walletBalBeforeDec.plus(transferAmount);
+          const walletBalBeforeStr = formatMoney(walletBalBeforeDec);
+          const walletBalAfterStr = formatMoney(walletBalAfterDec);
+          const walletResStr = formatMoney(toDecimal(wallet.reserved_balance));
+
+          const txnNo = this.generateReference('TXN');
+          const txnId = crypto.randomUUID();
+
+          record.status = 'completed';
+          record.execution_status = 'confirmed';
+          record.external_transaction_id = debitRes.executionId;
+          record.executed_at = new Date(debitRes.executedAt || Date.now());
+          record.updated_at = new Date();
+
+          if (pool) {
+            const client = await pool.connect();
+            try {
+              await client.query('BEGIN');
+              await client.query('UPDATE wallets SET balance = $1, updated_at = $2 WHERE id = $3', [
+                walletBalAfterStr,
+                now,
+                wallet.id,
+              ]);
+              await client.query(
+                `INSERT INTO transactions (id, transaction_no, user_id, wallet_id, type, amount, currency, balance_before, balance_after, reserved_before, reserved_after, status, reference_type, reference_id, description, created_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+                [
+                  txnId, txnNo, userId, wallet.id, 'transfer_in', amountStr, wallet.currency,
+                  walletBalBeforeStr, walletBalAfterStr, walletResStr, walletResStr,
+                  'completed', 'account_transfer', record.id,
+                  `Internal transfer from Trading Account #${tradingAccount.account_number} (${tradingAccount.platform}) [Ref: ${record.reference_no}]`,
+                  now,
+                ]
+              );
+              await client.query(
+                `INSERT INTO account_transfers (
+                  id, reference_no, user_id, wallet_id, trading_account_id, direction, amount, currency, status, execution_status, external_transaction_id, executed_at, idempotency_key, client_notes, created_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+                [
+                  record.id, record.reference_no, record.user_id, record.wallet_id, record.trading_account_id,
+                  record.direction, record.amount, record.currency, record.status, record.execution_status,
+                  record.external_transaction_id, record.executed_at, record.idempotency_key, record.client_notes,
+                  record.created_at, record.updated_at,
+                ]
+              );
+              await client.query('COMMIT');
+            } catch (dbErr) {
+              await client.query('ROLLBACK');
+              throw dbErr;
+            } finally {
+              client.release();
+            }
+          } else {
+            wallet.balance = walletBalAfterStr;
+            wallet.updated_at = now;
+            inMemoryDb.wallets.set(wallet.id, wallet);
+            inMemoryDb.wallets.set(`${wallet.user_id}_${wallet.currency}`, wallet);
+            inMemoryDb.accountTransfers.set(record.id, record);
+            inMemoryDb.transactions.unshift({
+              id: txnId,
+              transaction_no: txnNo,
+              user_id: userId,
+              wallet_id: wallet.id,
+              type: 'transfer_in',
+              amount: amountStr,
+              currency: wallet.currency,
+              balance_before: walletBalBeforeStr,
+              balance_after: walletBalAfterStr,
+              reserved_before: walletResStr,
+              reserved_after: walletResStr,
+              status: 'completed',
+              reference_type: 'account_transfer',
+              reference_id: record.id,
+              description: `Internal transfer from Trading Account #${tradingAccount.account_number} (${tradingAccount.platform}) [Ref: ${record.reference_no}]`,
+              created_at: now,
+            });
+          }
+
+          // Authoritative sync to CRM cached balance
+          await TradingAccountService.updateAccountBalance(
+            tradingAccount.id,
+            formatMoney(toDecimal(debitRes.newBalance))
+          );
+
+          await this.recordAuditLog(
+            userId,
+            'TRANSFER_AUTO_EXECUTED',
+            'account_transfer',
+            record.id,
+            {
+              reference_no: record.reference_no,
+              direction: record.direction,
+              amount: record.amount,
+              currency: record.currency,
+              trading_account_id: tradingAccount.id,
+              account_number: tradingAccount.account_number,
+              external_transaction_id: debitRes.executionId,
+              new_balance: debitRes.newBalance,
+            },
+            ip,
+            userAgent
+          );
+
+          await NotificationService.createNotification(
+            userId,
+            'Transfer Completed',
+            `Your internal transfer of $${record.amount} ${record.currency} from Trading Account #${tradingAccount.account_number} was executed instantly. Ref: ${record.reference_no}`,
+            'trading_account',
+            {
+              transfer_id: record.id,
+              reference_no: record.reference_no,
+              amount: record.amount,
+              currency: record.currency,
+              direction: record.direction,
+              external_transaction_id: debitRes.executionId,
+            }
+          );
+
+          return record;
+        } catch (bridgeErr: any) {
+          record.status = 'failed';
+          record.execution_status = 'failed';
+          record.rejection_reason = bridgeErr.message || 'Trading Engine debit failed';
+          if (pool) {
+            await query(
+              `INSERT INTO account_transfers (
+                id, reference_no, user_id, wallet_id, trading_account_id, direction, amount, currency, status, execution_status, rejection_reason, idempotency_key, client_notes, created_at, updated_at
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+              [
+                record.id, record.reference_no, record.user_id, record.wallet_id, record.trading_account_id,
+                record.direction, record.amount, record.currency, record.status, record.execution_status,
+                record.rejection_reason, record.idempotency_key, record.client_notes,
+                record.created_at, new Date(),
+              ]
+            );
+          } else {
+            inMemoryDb.accountTransfers.set(record.id, record);
+          }
+          throw bridgeErr;
+        }
+      } else {
+        throw new Error(`Invalid transfer direction: ${input.direction}`);
+      }
+    }
+
+    // =========================================================================
+    // MANUAL / GOVERNED APPROVAL PATH (Legacy / Manual Broker Governance)
+    // =========================================================================
     if (input.direction === 'wallet_to_trading') {
       // Available balance verification
       const availableDec = toDecimal(wallet.available_balance);
@@ -2200,10 +2601,35 @@ export class FinancialService {
     const tradingAccount = await TradingAccountService.findRawAccount(transfer.trading_account_id);
 
     if (transfer.direction === 'wallet_to_trading') {
+      let finalExternalTxnId = externalTxnId;
+      try {
+        if (tradingAccount) {
+          const bridgeRes = await TradingEngineBridgeService.creditTradingAccount({
+            accountId: tradingAccount.id,
+            accountNumber: tradingAccount.account_number,
+            amount: toDecimal(transfer.amount).toNumber(),
+            currency: transfer.currency,
+            referenceNo: transfer.reference_no,
+            idempotencyKey: transfer.idempotency_key || transfer.reference_no,
+            tenantId: (tradingAccount as any).tenant_id || 'default',
+            adminUserId: adminId,
+          });
+          if (bridgeRes?.executionId) {
+            finalExternalTxnId = bridgeRes.executionId;
+          }
+          await TradingAccountService.updateAccountBalance(
+            tradingAccount.id,
+            formatMoney(toDecimal(bridgeRes.newBalance))
+          );
+        }
+      } catch (bridgeErr) {
+        // Fall back gracefully to manual external transaction ID
+      }
+
       // Wallet was already debited during approval. External execution is now confirmed.
       transfer.status = 'completed';
       transfer.execution_status = 'confirmed';
-      transfer.external_transaction_id = externalTxnId;
+      transfer.external_transaction_id = finalExternalTxnId;
       transfer.executed_at = now;
       if (input.execution_notes) {
         transfer.admin_notes = (transfer.admin_notes ? transfer.admin_notes + ' | ' : '') + `Execution: ${input.execution_notes}`;
@@ -2215,12 +2641,37 @@ export class FinancialService {
           `UPDATE account_transfers 
            SET status = 'completed', execution_status = 'confirmed', external_transaction_id = $1, executed_at = $2, admin_notes = $3, updated_at = $4
            WHERE id = $5`,
-          [externalTxnId, now, transfer.admin_notes, now, transfer.id]
+          [finalExternalTxnId, now, transfer.admin_notes, now, transfer.id]
         );
       } else {
         inMemoryDb.accountTransfers.set(transfer.id, transfer);
       }
     } else if (transfer.direction === 'trading_to_wallet') {
+      let finalExternalTxnId = externalTxnId;
+      try {
+        if (tradingAccount) {
+          const bridgeRes = await TradingEngineBridgeService.debitTradingAccount({
+            accountId: tradingAccount.id,
+            accountNumber: tradingAccount.account_number,
+            amount: toDecimal(transfer.amount).toNumber(),
+            currency: transfer.currency,
+            referenceNo: transfer.reference_no,
+            idempotencyKey: transfer.idempotency_key || transfer.reference_no,
+            tenantId: (tradingAccount as any).tenant_id || 'default',
+            adminUserId: adminId,
+          });
+          if (bridgeRes?.executionId) {
+            finalExternalTxnId = bridgeRes.executionId;
+          }
+          await TradingAccountService.updateAccountBalance(
+            tradingAccount.id,
+            formatMoney(toDecimal(bridgeRes.newBalance))
+          );
+        }
+      } catch (bridgeErr) {
+        // Fall back
+      }
+
       // External debit from Trading Engine is now confirmed!
       // Atomically credit the client's CRM wallet and record transfer_in ledger entry.
       const transferAmountDec = toDecimal(transfer.amount);
@@ -2250,13 +2701,13 @@ export class FinancialService {
         status: 'completed',
         reference_type: 'account_transfer',
         reference_id: transfer.id,
-        description: `Transfer from Trading Account #${tradingAccount?.account_number || ''} confirmed [Ref: ${transfer.reference_no}, Ext: ${externalTxnId}]`,
+        description: `Transfer from Trading Account #${tradingAccount?.account_number || ''} confirmed [Ref: ${transfer.reference_no}, Ext: ${finalExternalTxnId}]`,
         created_at: now,
       };
 
       transfer.status = 'completed';
       transfer.execution_status = 'confirmed';
-      transfer.external_transaction_id = externalTxnId;
+      transfer.external_transaction_id = finalExternalTxnId;
       transfer.executed_at = now;
       if (input.execution_notes) {
         transfer.admin_notes = (transfer.admin_notes ? transfer.admin_notes + ' | ' : '') + `Execution: ${input.execution_notes}`;
@@ -2271,7 +2722,7 @@ export class FinancialService {
             `UPDATE account_transfers 
              SET status = 'completed', execution_status = 'confirmed', external_transaction_id = $1, executed_at = $2, admin_notes = $3, updated_at = $4
              WHERE id = $5`,
-            [externalTxnId, now, transfer.admin_notes, now, transfer.id]
+            [finalExternalTxnId, now, transfer.admin_notes, now, transfer.id]
           );
           await client.query(
             `UPDATE wallets SET balance = $1, updated_at = $2 WHERE id = $3`,
