@@ -4,22 +4,26 @@ import { TradingRuntimeService } from '../../../src/trading-engine';
 
 export interface FundingBridgeCreditInput {
   accountId: string;
-  accountNumber: string;
+  accountNumber?: string;
   amount: number;
   currency: string;
   referenceNo: string;
   idempotencyKey: string;
+  transactionId?: string;
+  note?: string;
   tenantId?: string;
   adminUserId?: string;
 }
 
 export interface FundingBridgeDebitInput {
   accountId: string;
-  accountNumber: string;
+  accountNumber?: string;
   amount: number;
   currency: string;
   referenceNo: string;
   idempotencyKey: string;
+  transactionId?: string;
+  note?: string;
   tenantId?: string;
   adminUserId?: string;
 }
@@ -48,26 +52,38 @@ export class TradingEngineBridgeError extends Error {
 
 export class TradingEngineBridgeService {
   private static getSecret(): string {
-    const secret =
-      process.env.CRM_M2M_SECRET ||
-      process.env.CRM_LAUNCH_SECRET ||
-      'test_only_crm_m2m_secret_at_least_32_characters_long_for_test!';
-    return secret;
+    const secret = process.env.CRM_M2M_SECRET || process.env.CRM_LAUNCH_SECRET;
+    if (!secret || secret.trim().length < 32) {
+      if (process.env.NODE_ENV === 'test' || process.env.CRM_TEST_MODE === 'true') {
+        return 'test_only_crm_m2m_secret_at_least_32_characters_long_for_test!';
+      }
+    }
+    return secret || 'test_only_crm_m2m_secret_at_least_32_characters_long_for_test!';
   }
 
   private static getBaseUrl(): string {
     return process.env.TRADING_ENGINE_URL || 'https://trading-platform-3a5e.onrender.com';
   }
 
-  public static generateSignature(timestamp: number, body?: any): string {
+  /**
+   * Generates Base64 HMAC-SHA256 signature matching Trading Platform M2M contract:
+   * Base64(HMAC-SHA256(`${timestamp}.${rawRequestBody}`, CRM_M2M_SECRET))
+   */
+  public static generateM2MSignature(secret: string, timestamp: string, rawRequestBody: string): string {
+    return crypto
+      .createHmac('sha256', secret)
+      .update(`${timestamp}.${rawRequestBody}`)
+      .digest('base64');
+  }
+
+  public static generateSignature(timestamp: number | string, body?: any): string {
     const secret = this.getSecret();
+    const tsStr = timestamp.toString();
     let bodyStr = '';
     if (body !== undefined && body !== null) {
       bodyStr = typeof body === 'string' ? body : JSON.stringify(body);
     }
-    const payload = `${timestamp}.${bodyStr}`;
-    const hmac = crypto.createHmac('sha256', secret).update(payload).digest('hex');
-    return `t=${timestamp},v1=${hmac}`;
+    return this.generateM2MSignature(secret, tsStr, bodyStr);
   }
 
   private static resolveLocalAccountId(
@@ -113,11 +129,7 @@ export class TradingEngineBridgeService {
    */
   public static async creditTradingAccount(input: FundingBridgeCreditInput): Promise<FundingExecutionResult> {
     const baseUrl = this.getBaseUrl();
-    const useLocalEngine =
-      process.env.CRM_USE_LOCAL_ENGINE === 'true' ||
-      baseUrl === 'local' ||
-      baseUrl.includes('127.0.0.1') ||
-      baseUrl.includes('localhost');
+    const useLocalEngine = process.env.CRM_USE_LOCAL_ENGINE === 'true' || baseUrl === 'local';
 
     if (useLocalEngine) {
       const targetId = this.resolveLocalAccountId(
@@ -141,40 +153,48 @@ export class TradingEngineBridgeService {
     }
 
     // Network HTTP call to Trading Engine
-    const timestamp = Date.now();
+    const timestamp = Date.now().toString();
     const payload = {
       accountId: input.accountId,
-      accountNumber: input.accountNumber,
       amount: input.amount,
-      currency: input.currency,
-      referenceNo: input.referenceNo,
-      tenantId: input.tenantId,
-      adminUserId: input.adminUserId,
+      currency: input.currency || 'USD',
+      transactionId: input.transactionId || input.referenceNo,
+      idempotencyKey: input.idempotencyKey || input.referenceNo,
+      note: input.note || `CRM Transfer ${input.referenceNo}`,
     };
-    const signature = this.generateSignature(timestamp, payload);
+    const rawBody = JSON.stringify(payload);
+    const signature = this.generateM2MSignature(this.getSecret(), timestamp, rawBody);
 
     try {
       const res = await fetch(`${baseUrl}/api/v1/admin/trading/funding/credit`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-CRM-Timestamp': timestamp,
           'X-CRM-Signature': signature,
-          'Idempotency-Key': input.idempotencyKey,
+          'Idempotency-Key': input.idempotencyKey || input.referenceNo,
         },
-        body: JSON.stringify(payload),
+        body: rawBody,
       });
 
-      const data = await res.json().catch(() => ({}));
+      const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new TradingEngineBridgeError(
-          data.code || 'ENGINE_CREDIT_FAILED',
-          data.message || `Trading Engine credit failed with HTTP ${res.status}`,
+          resData.code || resData.error || 'ENGINE_CREDIT_FAILED',
+          resData.message || `Trading Engine credit failed with HTTP ${res.status}`,
           res.status,
-          data.details
+          resData.details
         );
       }
 
-      return data as FundingExecutionResult;
+      const result = resData.data || resData;
+      return {
+        executionId: result.executionId || result.transactionId || result.id || input.referenceNo,
+        accountId: result.accountId || input.accountId,
+        previousBalance: result.previousBalance !== undefined ? Number(result.previousBalance) : 0,
+        newBalance: result.newBalance !== undefined ? Number(result.newBalance) : Number(input.amount),
+        executedAt: result.executedAt ? Number(result.executedAt) : Date.now(),
+      };
     } catch (err: any) {
       if (err instanceof TradingEngineBridgeError) throw err;
 
@@ -213,11 +233,7 @@ export class TradingEngineBridgeService {
    */
   public static async debitTradingAccount(input: FundingBridgeDebitInput): Promise<FundingExecutionResult> {
     const baseUrl = this.getBaseUrl();
-    const useLocalEngine =
-      process.env.CRM_USE_LOCAL_ENGINE === 'true' ||
-      baseUrl === 'local' ||
-      baseUrl.includes('127.0.0.1') ||
-      baseUrl.includes('localhost');
+    const useLocalEngine = process.env.CRM_USE_LOCAL_ENGINE === 'true' || baseUrl === 'local';
 
     if (useLocalEngine) {
       const targetId = this.resolveLocalAccountId(
@@ -240,40 +256,48 @@ export class TradingEngineBridgeService {
       return res.body;
     }
 
-    const timestamp = Date.now();
+    const timestamp = Date.now().toString();
     const payload = {
       accountId: input.accountId,
-      accountNumber: input.accountNumber,
       amount: input.amount,
-      currency: input.currency,
-      referenceNo: input.referenceNo,
-      tenantId: input.tenantId,
-      adminUserId: input.adminUserId,
+      currency: input.currency || 'USD',
+      transactionId: input.transactionId || input.referenceNo,
+      idempotencyKey: input.idempotencyKey || input.referenceNo,
+      note: input.note || `CRM Transfer ${input.referenceNo}`,
     };
-    const signature = this.generateSignature(timestamp, payload);
+    const rawBody = JSON.stringify(payload);
+    const signature = this.generateM2MSignature(this.getSecret(), timestamp, rawBody);
 
     try {
       const res = await fetch(`${baseUrl}/api/v1/admin/trading/funding/debit`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-CRM-Timestamp': timestamp,
           'X-CRM-Signature': signature,
-          'Idempotency-Key': input.idempotencyKey,
+          'Idempotency-Key': input.idempotencyKey || input.referenceNo,
         },
-        body: JSON.stringify(payload),
+        body: rawBody,
       });
 
-      const data = await res.json().catch(() => ({}));
+      const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new TradingEngineBridgeError(
-          data.code || 'ENGINE_DEBIT_FAILED',
-          data.message || `Trading Engine debit failed with HTTP ${res.status}`,
+          resData.code || resData.error || 'ENGINE_DEBIT_FAILED',
+          resData.message || `Trading Engine debit failed with HTTP ${res.status}`,
           res.status,
-          data.details
+          resData.details
         );
       }
 
-      return data as FundingExecutionResult;
+      const result = resData.data || resData;
+      return {
+        executionId: result.executionId || result.transactionId || result.id || input.referenceNo,
+        accountId: result.accountId || input.accountId,
+        previousBalance: result.previousBalance !== undefined ? Number(result.previousBalance) : 0,
+        newBalance: result.newBalance !== undefined ? Number(result.newBalance) : 0,
+        executedAt: result.executedAt ? Number(result.executedAt) : Date.now(),
+      };
     } catch (err: any) {
       if (err instanceof TradingEngineBridgeError) throw err;
 
@@ -315,13 +339,14 @@ export class TradingEngineBridgeService {
       return await TradingRuntimeService.getAccountRuntimeState(accountId, tenantId);
     }
 
-    const timestamp = Date.now();
-    const signature = this.generateSignature(timestamp);
+    const timestamp = Date.now().toString();
+    const signature = this.generateM2MSignature(this.getSecret(), timestamp, '');
     const tenantQuery = tenantId ? `?tenantId=${encodeURIComponent(tenantId)}` : '';
 
     try {
       const res = await fetch(`${baseUrl}/api/v1/admin/trading/accounts/${accountId}${tenantQuery}`, {
         headers: {
+          'X-CRM-Timestamp': timestamp,
           'X-CRM-Signature': signature,
         },
       });
@@ -348,13 +373,14 @@ export class TradingEngineBridgeService {
       return await TradingRuntimeService.getAccountRisk(accountId, tenantId);
     }
 
-    const timestamp = Date.now();
-    const signature = this.generateSignature(timestamp);
+    const timestamp = Date.now().toString();
+    const signature = this.generateM2MSignature(this.getSecret(), timestamp, '');
     const tenantQuery = tenantId ? `?tenantId=${encodeURIComponent(tenantId)}` : '';
 
     try {
       const res = await fetch(`${baseUrl}/api/v1/admin/trading/accounts/${accountId}/risk${tenantQuery}`, {
         headers: {
+          'X-CRM-Timestamp': timestamp,
           'X-CRM-Signature': signature,
         },
       });
