@@ -51,6 +51,20 @@ export class FinancialService {
     return `${prefix}-${timestamp}-${randomHex}`;
   }
 
+  private static sanitizeAuditDetails(obj: any): any {
+    if (!obj || typeof obj !== 'object') return obj;
+    const cloned = Array.isArray(obj) ? [...obj] : { ...obj };
+    const sensitiveKeys = ['secret', 'signature', 'token', 'password', 'key', 'auth', 'authorization', 'crm_m2m_secret', 'jwt'];
+    for (const k of Object.keys(cloned)) {
+      if (sensitiveKeys.some((s) => k.toLowerCase().includes(s))) {
+        cloned[k] = '[REDACTED]';
+      } else if (typeof cloned[k] === 'object' && cloned[k] !== null) {
+        cloned[k] = this.sanitizeAuditDetails(cloned[k]);
+      }
+    }
+    return cloned;
+  }
+
   /**
    * Records a security / administrative audit log entry
    */
@@ -68,12 +82,13 @@ export class FinancialService {
     const auditId = crypto.randomUUID();
     const sanitizedIp = ip ? String(ip).split(',')[0].trim().substring(0, 100) : null;
     const sanitizedUserAgent = userAgent ? String(userAgent).substring(0, 500) : null;
+    const sanitizedDetails = this.sanitizeAuditDetails(details);
 
     if (pool) {
       await query(
         `INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, ip_address, user_agent, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [auditId, actorId, action, targetType, targetId, JSON.stringify(details), sanitizedIp, sanitizedUserAgent, now]
+        [auditId, actorId, action, targetType, targetId, JSON.stringify(sanitizedDetails), sanitizedIp, sanitizedUserAgent, now]
       );
     } else {
       const record: AuditLogRecord = {
@@ -82,7 +97,7 @@ export class FinancialService {
         action,
         entity_type: targetType,
         entity_id: targetId,
-        details,
+        details: sanitizedDetails,
         ip_address: sanitizedIp,
         user_agent: sanitizedUserAgent,
         created_at: now,
@@ -664,55 +679,78 @@ export class FinancialService {
     };
 
     if (pool) {
-      await query(
-        `INSERT INTO withdrawals (id, reference_no, user_id, wallet_id, payment_method_id, payment_method_name, amount, currency, status, payout_details, client_notes, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-        [
-          withdrawalRecord.id,
-          withdrawalRecord.reference_no,
-          withdrawalRecord.user_id,
-          withdrawalRecord.wallet_id,
-          withdrawalRecord.payment_method_id,
-          withdrawalRecord.payment_method_name,
-          withdrawalRecord.amount,
-          withdrawalRecord.currency,
-          withdrawalRecord.status,
-          JSON.stringify(withdrawalRecord.payout_details),
-          withdrawalRecord.client_notes,
-          withdrawalRecord.created_at,
-          withdrawalRecord.updated_at,
-        ]
-      );
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const lockWallet = await client.query<{ balance: string; reserved_balance: string }>(
+          'SELECT balance, reserved_balance FROM wallets WHERE id = $1 FOR UPDATE',
+          [wallet.id]
+        );
+        if (lockWallet.rows.length === 0) throw new Error('Wallet not found');
+        const liveBal = toDecimal(lockWallet.rows[0].balance);
+        const liveRes = toDecimal(lockWallet.rows[0].reserved_balance);
+        if (liveBal.minus(liveRes).lessThan(withdrawalAmount)) {
+          throw new Error(`Insufficient wallet available balance. Available: $${formatMoney(liveBal.minus(liveRes))}`);
+        }
+        const updatedReservedStr = formatMoney(liveRes.plus(withdrawalAmount));
 
-      await query(
-        `UPDATE wallets
-         SET reserved_balance = $1, updated_at = $2
-         WHERE id = $3`,
-        [reservedAfterStr, now, wallet.id]
-      );
+        await client.query(
+          `INSERT INTO withdrawals (id, reference_no, user_id, wallet_id, payment_method_id, payment_method_name, amount, currency, status, payout_details, client_notes, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+          [
+            withdrawalRecord.id,
+            withdrawalRecord.reference_no,
+            withdrawalRecord.user_id,
+            withdrawalRecord.wallet_id,
+            withdrawalRecord.payment_method_id,
+            withdrawalRecord.payment_method_name,
+            withdrawalRecord.amount,
+            withdrawalRecord.currency,
+            withdrawalRecord.status,
+            JSON.stringify(withdrawalRecord.payout_details),
+            withdrawalRecord.client_notes,
+            withdrawalRecord.created_at,
+            withdrawalRecord.updated_at,
+          ]
+        );
 
-      await query(
-        `INSERT INTO transactions (id, transaction_no, user_id, wallet_id, type, amount, currency, balance_before, balance_after, reserved_before, reserved_after, status, reference_type, reference_id, description, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
-        [
-          transactionRecord.id,
-          transactionRecord.transaction_no,
-          transactionRecord.user_id,
-          transactionRecord.wallet_id,
-          transactionRecord.type,
-          transactionRecord.amount,
-          transactionRecord.currency,
-          transactionRecord.balance_before,
-          transactionRecord.balance_after,
-          transactionRecord.reserved_before,
-          transactionRecord.reserved_after,
-          transactionRecord.status,
-          transactionRecord.reference_type,
-          transactionRecord.reference_id,
-          transactionRecord.description,
-          transactionRecord.created_at,
-        ]
-      );
+        await client.query(
+          `UPDATE wallets
+           SET reserved_balance = $1, updated_at = $2
+           WHERE id = $3`,
+          [updatedReservedStr, now, wallet.id]
+        );
+
+        await client.query(
+          `INSERT INTO transactions (id, transaction_no, user_id, wallet_id, type, amount, currency, balance_before, balance_after, reserved_before, reserved_after, status, reference_type, reference_id, description, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+          [
+            transactionRecord.id,
+            transactionRecord.transaction_no,
+            transactionRecord.user_id,
+            transactionRecord.wallet_id,
+            transactionRecord.type,
+            transactionRecord.amount,
+            transactionRecord.currency,
+            formatMoney(liveBal),
+            formatMoney(liveBal),
+            formatMoney(liveRes),
+            updatedReservedStr,
+            transactionRecord.status,
+            transactionRecord.reference_type,
+            transactionRecord.reference_id,
+            transactionRecord.description,
+            transactionRecord.created_at,
+          ]
+        );
+
+        await client.query('COMMIT');
+      } catch (dbErr) {
+        await client.query('ROLLBACK');
+        throw dbErr;
+      } finally {
+        client.release();
+      }
     } else {
       inMemoryDb.withdrawals.set(withdrawalRecord.id, withdrawalRecord);
       wallet.reserved_balance = reservedAfterStr;

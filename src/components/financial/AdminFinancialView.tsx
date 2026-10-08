@@ -1170,7 +1170,7 @@ export function AdminFinancialView({ initialTab = 'deposits' }: AdminFinancialVi
           {activeTab === 'transactions' && (
             <div className="space-y-4">
               <div className="text-xs text-slate-400 pb-2 border-b border-[#30363d]">
-                Double-entry financial audit journal with balance before/after snapshots for every transaction.
+                Financial transaction ledger with balance before/after snapshots for every transaction.
               </div>
 
               <div className="overflow-x-auto">

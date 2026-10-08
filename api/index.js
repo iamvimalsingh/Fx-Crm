@@ -68640,7 +68640,7 @@ var require_express2 = __commonJS({
 });
 
 // netlify/functions/services/auth.service.ts
-import crypto5 from "crypto";
+import crypto10 from "crypto";
 
 // node_modules/bcryptjs/index.js
 import nodeCrypto from "crypto";
@@ -70624,7 +70624,7 @@ var DatabaseGuard = class {
    * Identifies if runtime is executing in a production environment
    */
   static isProduction() {
-    return process.env.NODE_ENV === "production" || process.env.APP_ENV === "production" || process.env.NETLIFY === "true" || process.env.CONTEXT === "production";
+    return process.env.NODE_ENV === "production" || process.env.APP_ENV === "production" || process.env.NETLIFY === "true" || process.env.CONTEXT === "production" || process.env.VERCEL === "1" || process.env.VERCEL_ENV === "production";
   }
   /**
    * Identifies if runtime is explicitly authorized test or local development mode
@@ -70822,7 +70822,7 @@ var JWT_EXPIRES_IN = "7d";
 var TRADING_LAUNCH_TOKEN_EXPIRES_IN = "5m";
 function getJwtSecret() {
   const rawSecret = process.env.JWT_SECRET;
-  const isProd = process.env.NODE_ENV === "production" || process.env.APP_ENV === "production" || process.env.NETLIFY === "true" || process.env.CONTEXT === "production";
+  const isProd = DatabaseGuard.isProduction();
   if (!rawSecret || rawSecret.trim() === "") {
     if (isProd) {
       throw new JwtConfigurationError(
@@ -70843,7 +70843,7 @@ function getJwtSecret() {
 }
 function getCrmLaunchSecret() {
   const rawSecret = process.env.CRM_LAUNCH_SECRET;
-  const isProd = process.env.NODE_ENV === "production" || process.env.APP_ENV === "production" || process.env.NETLIFY === "true" || process.env.CONTEXT === "production";
+  const isProd = DatabaseGuard.isProduction();
   if (!rawSecret || rawSecret.trim() === "") {
     if (isProd) {
       throw new CrmLaunchSecretConfigurationError(
@@ -71142,3340 +71142,10 @@ var NotificationService = class {
 };
 
 // netlify/functions/services/trading-account.service.ts
-import crypto4 from "crypto";
-var TradingAccountService = class {
-  /**
-   * Records an audit log entry for trading account events
-   */
-  static async recordAuditLog(actorId, action, targetId, details, ip, userAgent) {
-    const pool2 = getPool();
-    const now = /* @__PURE__ */ new Date();
-    const auditId = crypto4.randomUUID();
-    const sanitizedIp = ip ? String(ip).split(",")[0].trim().substring(0, 100) : null;
-    const sanitizedUserAgent = userAgent ? String(userAgent).substring(0, 500) : null;
-    if (pool2) {
-      await query(
-        `INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, ip_address, user_agent, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [auditId, actorId, action, "trading_account", targetId, JSON.stringify(details), sanitizedIp, sanitizedUserAgent, now]
-      );
-    } else {
-      const record2 = {
-        id: auditId,
-        actor_id: actorId,
-        action,
-        entity_type: "trading_account",
-        entity_id: targetId,
-        details,
-        ip_address: sanitizedIp,
-        user_agent: sanitizedUserAgent,
-        created_at: now
-      };
-      inMemoryDb.auditLogs.unshift(record2);
-    }
-  }
-  /**
-   * Generates a numeric account login number
-   */
-  static generateAccountNumber(isDemo) {
-    const prefix = isDemo ? "90" : "20";
-    const rand = Math.floor(1e5 + Math.random() * 9e5);
-    return `${prefix}${rand}`;
-  }
-  /**
-   * Platform-agnostic terminal URL resolver based on platform and environment config
-   */
-  static resolveDefaultTerminalUrl(platform2) {
-    const cleanPlatform = (platform2 || "").trim().toUpperCase();
-    const envKey = `TERMINAL_URL_${cleanPlatform}`;
-    if (process.env[envKey]) {
-      return process.env[envKey];
-    }
-    if (process.env.DEFAULT_TERMINAL_URL) {
-      return process.env.DEFAULT_TERMINAL_URL;
-    }
-    switch (cleanPlatform) {
-      case "MT5":
-      case "MT4":
-        return "https://trade.mql5.com/trade";
-      case "CTRADER":
-        return "https://ct.spotware.com";
-      case "EDGETRADER":
-      case "AEROTRADER":
-      case "WEBTRADER":
-        return null;
-      default:
-        return null;
-    }
-  }
-  /**
-   * Safely decodes and hydrates a raw DB row or in-memory record into a full TradingAccountRecord
-   */
-  static hydrateAccountRecord(row) {
-    const isDemo = Boolean(row.is_demo);
-    let demoPassword = isDemo ? row.password || null : null;
-    let demoBalance = row.balance !== void 0 && row.balance !== null ? String(row.balance) : isDemo ? "10000.00" : "0.00";
-    let terminalUrl = row.terminal_url || null;
-    let cleanInvestorNotes = row.investor_notes || null;
-    let externalAccountId = row.external_account_id || null;
-    let tenantId = row.tenant_id || "default";
-    if (row.investor_notes && typeof row.investor_notes === "string" && row.investor_notes.startsWith("{")) {
-      try {
-        const meta3 = JSON.parse(row.investor_notes);
-        if (isDemo && meta3.password !== void 0) demoPassword = meta3.password;
-        if (meta3.balance !== void 0) demoBalance = meta3.balance;
-        if (meta3.terminal_url !== void 0) terminalUrl = meta3.terminal_url;
-        if (meta3.external_account_id !== void 0) externalAccountId = meta3.external_account_id;
-        if (meta3.tenant_id !== void 0) tenantId = meta3.tenant_id;
-        if (meta3.notes !== void 0) cleanInvestorNotes = meta3.notes;
-      } catch {
-      }
-    }
-    if (isDemo) {
-      if (!demoBalance || demoBalance === "0" || demoBalance === "0.00") {
-        demoBalance = "10000.00";
-      }
-      if (!demoPassword) {
-        demoPassword = "Demo@" + (row.account_number ? String(row.account_number).slice(-4) : Math.floor(1e3 + Math.random() * 9e3));
-      }
-      if (!terminalUrl) {
-        terminalUrl = this.resolveDefaultTerminalUrl(row.platform);
-      }
-    }
-    return {
-      id: row.id,
-      account_number: String(row.account_number),
-      user_id: row.user_id,
-      platform: row.platform,
-      account_type: row.account_type,
-      server_name: row.server_name,
-      currency: row.currency,
-      leverage: row.leverage,
-      status: row.status,
-      nickname: row.nickname || null,
-      is_demo: isDemo,
-      group_tier: row.group_tier || null,
-      external_account_id: externalAccountId,
-      tenant_id: tenantId,
-      investor_notes: cleanInvestorNotes,
-      admin_notes: row.admin_notes || null,
-      rejection_reason: row.rejection_reason || null,
-      approved_at: row.approved_at ? new Date(row.approved_at) : null,
-      approved_by: row.approved_by || null,
-      created_at: new Date(row.created_at),
-      updated_at: new Date(row.updated_at),
-      password: isDemo ? demoPassword : null,
-      // Plaintext passwords are NEVER stored or returned for live accounts
-      balance: demoBalance,
-      terminal_url: terminalUrl
-    };
-  }
-  /**
-   * Parses auxiliary fields from a record's investor_notes or raw JSON
-   */
-  static parseMetadata(record2) {
-    if (!record2) return {};
-    const notes = typeof record2 === "string" ? record2 : record2.investor_notes;
-    if (notes && typeof notes === "string" && notes.startsWith("{")) {
-      try {
-        return JSON.parse(notes);
-      } catch {
-        return { notes };
-      }
-    }
-    return { notes: notes || null };
-  }
-  /**
-   * Serializes auxiliary fields into a JSON string to ensure compatibility with all database engines
-   */
-  static serializeMetadata(record2) {
-    if (!record2) return JSON.stringify({});
-    return JSON.stringify({
-      password: record2.password ?? record2.demo_password ?? null,
-      balance: record2.balance ?? null,
-      terminal_url: record2.terminal_url ?? null,
-      notes: record2.notes ?? record2.investor_notes ?? null,
-      ...record2
-    });
-  }
-  /**
-   * Provision default demo trading account for a new or existing client
-   */
-  static async provisionDefaultDemoAccount(userId, preferredCurrency = "USD", ip, userAgent) {
-    const now = /* @__PURE__ */ new Date();
-    const accountId = crypto4.randomUUID();
-    const accountNumber = this.generateAccountNumber(true);
-    const defaultPlatform = process.env.DEFAULT_TRADING_PLATFORM || "MT5";
-    const defaultServer = process.env.DEFAULT_DEMO_SERVER || `${defaultPlatform}-Demo-Server`;
-    const defaultTerminalUrl = this.resolveDefaultTerminalUrl(defaultPlatform);
-    const demoPassword = "Demo@" + Math.floor(1e3 + Math.random() * 9e3);
-    const initialBalance = "10000.00";
-    const currency = (preferredCurrency || "USD").toUpperCase();
-    const leverage = "1:100";
-    const newAccount = {
-      id: accountId,
-      account_number: accountNumber,
-      user_id: userId,
-      platform: defaultPlatform,
-      account_type: "standard",
-      server_name: defaultServer,
-      currency,
-      leverage,
-      status: "active",
-      nickname: "Default Demo Account",
-      is_demo: true,
-      group_tier: `demo_${currency.toLowerCase()}`,
-      investor_notes: null,
-      admin_notes: "System provisioned default demo account upon client registration",
-      rejection_reason: null,
-      approved_at: now,
-      approved_by: "SYSTEM",
-      created_at: now,
-      updated_at: now,
-      password: demoPassword,
-      balance: initialBalance,
-      terminal_url: defaultTerminalUrl
-    };
-    const pool2 = getPool();
-    if (pool2) {
-      const serializedNotes = this.serializeMetadata(newAccount);
-      await query(
-        `INSERT INTO trading_accounts 
-         (id, account_number, user_id, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, group_tier, investor_notes, admin_notes, created_at, updated_at, approved_at, approved_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
-        [
-          newAccount.id,
-          newAccount.account_number,
-          newAccount.user_id,
-          newAccount.platform,
-          newAccount.account_type,
-          newAccount.server_name,
-          newAccount.currency,
-          newAccount.leverage,
-          newAccount.status,
-          newAccount.nickname,
-          newAccount.is_demo,
-          newAccount.group_tier,
-          serializedNotes,
-          newAccount.admin_notes,
-          newAccount.created_at,
-          newAccount.updated_at,
-          newAccount.approved_at,
-          newAccount.approved_by
-        ]
-      );
-    } else {
-      inMemoryDb.tradingAccounts.set(newAccount.id, { ...newAccount });
-    }
-    await this.recordAuditLog(
-      userId,
-      "DEMO_ACCOUNT_PROVISIONED",
-      newAccount.id,
-      {
-        account_number: newAccount.account_number,
-        platform: newAccount.platform,
-        account_type: newAccount.account_type,
-        currency: newAccount.currency,
-        leverage: newAccount.leverage,
-        balance: newAccount.balance,
-        server_name: newAccount.server_name,
-        status: newAccount.status,
-        is_demo: true,
-        terminal_url: newAccount.terminal_url
-      },
-      ip,
-      userAgent
-    );
-    return newAccount;
-  }
-  /**
-   * Register a new trading account request for a user
-   */
-  static async registerAccount(userId, input2, ip, userAgent) {
-    const now = /* @__PURE__ */ new Date();
-    const accountId = crypto4.randomUUID();
-    const accountNumber = this.generateAccountNumber(input2.is_demo);
-    const defaultServer = input2.server_name || (input2.is_demo ? `${input2.platform}-Demo-Server` : `${input2.platform}-Real-Server-1`);
-    const status = input2.is_demo ? "active" : "pending_approval";
-    const demoPassword = input2.is_demo ? "Demo@" + Math.floor(1e3 + Math.random() * 9e3) : null;
-    const demoBalance = input2.is_demo ? "10000.00" : "0.00";
-    const terminalUrl = input2.is_demo ? this.resolveDefaultTerminalUrl(input2.platform) : null;
-    const newAccount = {
-      id: accountId,
-      account_number: accountNumber,
-      user_id: userId,
-      platform: input2.platform,
-      account_type: input2.account_type,
-      server_name: defaultServer,
-      currency: input2.currency.toUpperCase(),
-      leverage: input2.leverage,
-      status,
-      nickname: input2.nickname?.trim() || null,
-      is_demo: input2.is_demo,
-      group_tier: `${input2.account_type}_${input2.currency.toLowerCase()}`,
-      created_at: now,
-      updated_at: now,
-      approved_at: input2.is_demo ? now : null,
-      approved_by: input2.is_demo ? "SYSTEM" : null,
-      password: demoPassword,
-      balance: demoBalance,
-      terminal_url: terminalUrl
-    };
-    const pool2 = getPool();
-    if (pool2) {
-      const serializedNotes = this.serializeMetadata(newAccount);
-      await query(
-        `INSERT INTO trading_accounts 
-         (id, account_number, user_id, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, group_tier, investor_notes, created_at, updated_at, approved_at, approved_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
-        [
-          newAccount.id,
-          newAccount.account_number,
-          newAccount.user_id,
-          newAccount.platform,
-          newAccount.account_type,
-          newAccount.server_name,
-          newAccount.currency,
-          newAccount.leverage,
-          newAccount.status,
-          newAccount.nickname,
-          newAccount.is_demo,
-          newAccount.group_tier,
-          serializedNotes,
-          newAccount.created_at,
-          newAccount.updated_at,
-          newAccount.approved_at,
-          newAccount.approved_by
-        ]
-      );
-    } else {
-      inMemoryDb.tradingAccounts.set(newAccount.id, { ...newAccount });
-    }
-    await this.recordAuditLog(
-      userId,
-      "TRADING_ACCOUNT_REGISTERED",
-      newAccount.id,
-      {
-        account_number: newAccount.account_number,
-        platform: newAccount.platform,
-        account_type: newAccount.account_type,
-        currency: newAccount.currency,
-        leverage: newAccount.leverage,
-        is_demo: newAccount.is_demo,
-        status: newAccount.status
-      },
-      ip,
-      userAgent
-    );
-    return newAccount;
-  }
-  /**
-   * Link an existing external trading account to the user's CRM profile
-   */
-  static async linkExistingAccount(userId, input2, ip, userAgent) {
-    const cleanAccountNumber = input2.account_number.trim();
-    const pool2 = getPool();
-    if (pool2) {
-      const existing = await query(
-        `SELECT * FROM trading_accounts 
-         WHERE account_number = $1 AND platform = $2 AND status != 'archived'`,
-        [cleanAccountNumber, input2.platform]
-      );
-      if (existing.length > 0) {
-        throw new Error("This trading account number is already linked or pending review in the CRM");
-      }
-    } else {
-      for (const acc of inMemoryDb.tradingAccounts.values()) {
-        if (acc.account_number === cleanAccountNumber && acc.platform === input2.platform && acc.status !== "archived") {
-          throw new Error("This trading account number is already linked or pending review in the CRM");
-        }
-      }
-    }
-    const now = /* @__PURE__ */ new Date();
-    const accountId = crypto4.randomUUID();
-    const linkedAccount = {
-      id: accountId,
-      account_number: cleanAccountNumber,
-      user_id: userId,
-      platform: input2.platform,
-      account_type: input2.account_type,
-      server_name: input2.server_name.trim(),
-      currency: input2.currency.toUpperCase(),
-      leverage: input2.leverage,
-      status: "pending_approval",
-      nickname: input2.nickname?.trim() || null,
-      is_demo: false,
-      investor_notes: input2.investor_notes?.trim() || null,
-      group_tier: `${input2.account_type}_${input2.currency.toLowerCase()}`,
-      created_at: now,
-      updated_at: now
-    };
-    if (pool2) {
-      await query(
-        `INSERT INTO trading_accounts 
-         (id, account_number, user_id, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, investor_notes, group_tier, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
-        [
-          linkedAccount.id,
-          linkedAccount.account_number,
-          linkedAccount.user_id,
-          linkedAccount.platform,
-          linkedAccount.account_type,
-          linkedAccount.server_name,
-          linkedAccount.currency,
-          linkedAccount.leverage,
-          linkedAccount.status,
-          linkedAccount.nickname,
-          linkedAccount.is_demo,
-          linkedAccount.investor_notes,
-          linkedAccount.group_tier,
-          linkedAccount.created_at,
-          linkedAccount.updated_at
-        ]
-      );
-    } else {
-      inMemoryDb.tradingAccounts.set(linkedAccount.id, linkedAccount);
-    }
-    await this.recordAuditLog(
-      userId,
-      "TRADING_ACCOUNT_LINK_REQUESTED",
-      linkedAccount.id,
-      {
-        account_number: linkedAccount.account_number,
-        platform: linkedAccount.platform,
-        server_name: linkedAccount.server_name,
-        currency: linkedAccount.currency,
-        status: linkedAccount.status
-      },
-      ip,
-      userAgent
-    );
-    return linkedAccount;
-  }
-  /**
-   * Get all trading accounts owned by a specific user (Client view)
-   */
-  static async getUserAccounts(userId) {
-    const pool2 = getPool();
-    let accounts = [];
-    if (pool2) {
-      const rows = await query(
-        `SELECT * FROM trading_accounts WHERE user_id = $1 AND status != 'archived' ORDER BY created_at DESC`,
-        [userId]
-      );
-      accounts = rows.map((r5) => this.hydrateAccountRecord(r5));
-    } else {
-      const results = [];
-      for (const acc of inMemoryDb.tradingAccounts.values()) {
-        if (acc.user_id === userId && acc.status !== "archived") {
-          results.push(this.hydrateAccountRecord(acc));
-        }
-      }
-      accounts = results.sort((a5, b5) => b5.created_at.getTime() - a5.created_at.getTime());
-    }
-    if (accounts.length === 0) {
-      try {
-        const defaultDemo = await this.provisionDefaultDemoAccount(userId);
-        accounts = [defaultDemo];
-      } catch (err) {
-        console.error("Error auto-provisioning demo account for client:", err);
-      }
-    }
-    return accounts;
-  }
-  /**
-   * Get a single trading account by ID with strict IDOR ownership check
-   */
-  static async getUserAccountById(userId, accountId) {
-    const account = await this.findRawAccount(accountId);
-    if (!account) {
-      const err = new Error("Trading account not found");
-      err.statusCode = 404;
-      throw err;
-    }
-    if (account.user_id !== userId) {
-      const err = new Error("Access forbidden: you do not have permission to access this trading account");
-      err.statusCode = 403;
-      throw err;
-    }
-    return account;
-  }
-  /**
-   * Update nickname/display label of a trading account with strict IDOR ownership check
-   */
-  static async updateUserAccountNickname(userId, accountId, nickname, ip, userAgent) {
-    const account = await this.getUserAccountById(userId, accountId);
-    const updatedNickname = nickname?.trim() || null;
-    const now = /* @__PURE__ */ new Date();
-    const pool2 = getPool();
-    if (pool2) {
-      await query(
-        `UPDATE trading_accounts SET nickname = $1, updated_at = $2 WHERE id = $3`,
-        [updatedNickname, now, accountId]
-      );
-    } else {
-      const record2 = inMemoryDb.tradingAccounts.get(accountId);
-      if (record2) {
-        record2.nickname = updatedNickname;
-        record2.updated_at = now;
-      }
-    }
-    account.nickname = updatedNickname;
-    account.updated_at = now;
-    await this.recordAuditLog(
-      userId,
-      "TRADING_ACCOUNT_NICKNAME_UPDATED",
-      accountId,
-      {
-        account_number: account.account_number,
-        nickname: updatedNickname
-      },
-      ip,
-      userAgent
-    );
-    return account;
-  }
-  /**
-   * Request leverage change on a trading account with strict IDOR ownership check
-   */
-  static async requestLeverageChange(userId, accountId, requestedLeverage, reason, ip, userAgent) {
-    const account = await this.getUserAccountById(userId, accountId);
-    if (account.status === "archived" || account.status === "disabled") {
-      const err = new Error(`Cannot request leverage change on an account with status '${account.status}'`);
-      err.statusCode = 400;
-      throw err;
-    }
-    await this.recordAuditLog(
-      userId,
-      "TRADING_ACCOUNT_LEVERAGE_CHANGE_REQUESTED",
-      accountId,
-      {
-        account_number: account.account_number,
-        current_leverage: account.leverage,
-        requested_leverage: requestedLeverage,
-        reason: reason || null
-      },
-      ip,
-      userAgent
-    );
-    return {
-      message: `Leverage change request to ${requestedLeverage} submitted for administrative review`,
-      account
-    };
-  }
-  // =========================================================================
-  // ADMIN WORKFLOWS
-  // =========================================================================
-  /**
-   * List all trading accounts across the broker with search and filters (Admin view)
-   */
-  static async getAllAccountsAdmin(filters = {}) {
-    const pool2 = getPool();
-    if (pool2) {
-      let sql = `
-        SELECT ta.*, u.first_name, u.last_name, u.email, u.country
-        FROM trading_accounts ta
-        JOIN users u ON ta.user_id = u.id
-        WHERE 1=1
-      `;
-      const params = [];
-      if (filters.status) {
-        params.push(filters.status);
-        sql += ` AND ta.status = $${params.length}`;
-      }
-      if (filters.platform) {
-        params.push(filters.platform);
-        sql += ` AND ta.platform = $${params.length}`;
-      }
-      if (filters.user_id) {
-        params.push(filters.user_id);
-        sql += ` AND ta.user_id = $${params.length}`;
-      }
-      if (filters.search) {
-        params.push(`%${filters.search.toLowerCase()}%`);
-        sql += ` AND (LOWER(ta.account_number) LIKE $${params.length} OR LOWER(u.email) LIKE $${params.length} OR LOWER(ta.nickname) LIKE $${params.length})`;
-      }
-      sql += ` ORDER BY ta.created_at DESC`;
-      const rows = await query(sql, params);
-      return rows.map((r5) => {
-        const hydrated = this.hydrateAccountRecord(r5);
-        return {
-          ...hydrated,
-          owner: {
-            id: r5.user_id,
-            first_name: r5.first_name,
-            last_name: r5.last_name,
-            email: r5.email,
-            country: r5.country
-          }
-        };
-      });
-    }
-    const results = [];
-    for (const acc of inMemoryDb.tradingAccounts.values()) {
-      if (filters.status && acc.status !== filters.status) continue;
-      if (filters.platform && acc.platform !== filters.platform) continue;
-      if (filters.user_id && acc.user_id !== filters.user_id) continue;
-      let owner = void 0;
-      for (const u of inMemoryDb.users.values()) {
-        if (u.id === acc.user_id) {
-          owner = u;
-          break;
-        }
-      }
-      if (filters.search) {
-        const term = filters.search.toLowerCase();
-        const matchNum = acc.account_number.toLowerCase().includes(term);
-        const matchNick = acc.nickname?.toLowerCase().includes(term);
-        const matchEmail = owner?.email.toLowerCase().includes(term);
-        if (!matchNum && !matchNick && !matchEmail) continue;
-      }
-      const hydrated = this.hydrateAccountRecord(acc);
-      results.push({
-        ...hydrated,
-        owner: owner ? {
-          id: owner.id,
-          first_name: owner.first_name,
-          last_name: owner.last_name,
-          email: owner.email,
-          country: owner.country
-        } : void 0
-      });
-    }
-    return results.sort((a5, b5) => b5.created_at.getTime() - a5.created_at.getTime());
-  }
-  /**
-   * Get single trading account detail with owner and audit logs (Admin view)
-   */
-  static async getAccountByIdAdmin(accountId) {
-    const account = await this.findRawAccount(accountId);
-    if (!account) {
-      const err = new Error("Trading account not found");
-      err.statusCode = 404;
-      throw err;
-    }
-    let owner = void 0;
-    const pool2 = getPool();
-    if (pool2) {
-      const userRows = await query(`SELECT * FROM users WHERE id = $1`, [account.user_id]);
-      owner = userRows[0];
-    } else {
-      for (const u of inMemoryDb.users.values()) {
-        if (u.id === account.user_id) {
-          owner = u;
-          break;
-        }
-      }
-    }
-    let auditLogs = [];
-    if (pool2) {
-      auditLogs = await query(
-        `SELECT * FROM audit_logs WHERE entity_type = 'trading_account' AND entity_id = $1 ORDER BY created_at DESC`,
-        [accountId]
-      );
-    } else {
-      auditLogs = inMemoryDb.auditLogs.filter(
-        (log3) => log3.entity_type === "trading_account" && log3.entity_id === accountId
-      );
-    }
-    return {
-      account: {
-        ...account,
-        owner: owner ? {
-          id: owner.id,
-          first_name: owner.first_name,
-          last_name: owner.last_name,
-          email: owner.email,
-          country: owner.country
-        } : void 0
-      },
-      audit_trail: auditLogs
-    };
-  }
-  /**
-   * Approve a pending trading account (Admin workflow)
-   */
-  static async approveAccount(adminId, accountId, input2, ip, userAgent) {
-    const account = await this.findRawAccount(accountId);
-    if (!account) {
-      const err = new Error("Trading account not found");
-      err.statusCode = 404;
-      throw err;
-    }
-    if (account.status === "active") {
-      const err = new Error("This trading account is already active");
-      err.statusCode = 400;
-      throw err;
-    }
-    const now = /* @__PURE__ */ new Date();
-    const updatedAccountNumber = input2.account_number?.trim() || account.account_number;
-    const updatedServer = input2.server_name?.trim() || account.server_name;
-    const updatedGroupTier = input2.group_tier?.trim() || account.group_tier;
-    const adminNotes = input2.admin_notes?.trim() || account.admin_notes;
-    const pool2 = getPool();
-    if (pool2) {
-      await query(
-        `UPDATE trading_accounts 
-         SET status = 'active', account_number = $1, server_name = $2, group_tier = $3, admin_notes = $4, approved_at = $5, approved_by = $6, updated_at = $5
-         WHERE id = $7`,
-        [updatedAccountNumber, updatedServer, updatedGroupTier, adminNotes, now, adminId, accountId]
-      );
-    } else {
-      const record2 = inMemoryDb.tradingAccounts.get(accountId);
-      if (record2) {
-        record2.status = "active";
-        record2.account_number = updatedAccountNumber;
-        record2.server_name = updatedServer;
-        record2.group_tier = updatedGroupTier;
-        record2.admin_notes = adminNotes;
-        record2.approved_at = now;
-        record2.approved_by = adminId;
-        record2.updated_at = now;
-      }
-    }
-    account.status = "active";
-    account.account_number = updatedAccountNumber;
-    account.server_name = updatedServer;
-    account.group_tier = updatedGroupTier;
-    account.admin_notes = adminNotes;
-    account.approved_at = now;
-    account.approved_by = adminId;
-    account.updated_at = now;
-    await this.recordAuditLog(
-      adminId,
-      "TRADING_ACCOUNT_APPROVED",
-      accountId,
-      {
-        account_number: account.account_number,
-        server_name: account.server_name,
-        group_tier: account.group_tier,
-        admin_notes: adminNotes
-      },
-      ip,
-      userAgent
-    );
-    await NotificationService.createNotification(
-      account.user_id,
-      "Trading Account Approved",
-      `Your trading account #${account.account_number} (${account.platform}) is now active.`,
-      "trading_account",
-      { account_id: account.id, account_number: account.account_number, platform: account.platform }
-    );
-    return account;
-  }
-  /**
-   * Reject a pending trading account (Admin workflow)
-   */
-  static async rejectAccount(adminId, accountId, input2, ip, userAgent) {
-    const account = await this.findRawAccount(accountId);
-    if (!account) {
-      const err = new Error("Trading account not found");
-      err.statusCode = 404;
-      throw err;
-    }
-    const now = /* @__PURE__ */ new Date();
-    const rejectionReason = input2.rejection_reason.trim();
-    const adminNotes = input2.admin_notes?.trim() || account.admin_notes;
-    const pool2 = getPool();
-    if (pool2) {
-      await query(
-        `UPDATE trading_accounts 
-         SET status = 'disabled', rejection_reason = $1, admin_notes = $2, updated_at = $3
-         WHERE id = $4`,
-        [rejectionReason, adminNotes, now, accountId]
-      );
-    } else {
-      const record2 = inMemoryDb.tradingAccounts.get(accountId);
-      if (record2) {
-        record2.status = "disabled";
-        record2.rejection_reason = rejectionReason;
-        record2.admin_notes = adminNotes;
-        record2.updated_at = now;
-      }
-    }
-    account.status = "disabled";
-    account.rejection_reason = rejectionReason;
-    account.admin_notes = adminNotes;
-    account.updated_at = now;
-    await this.recordAuditLog(
-      adminId,
-      "TRADING_ACCOUNT_REJECTED",
-      accountId,
-      {
-        account_number: account.account_number,
-        rejection_reason: rejectionReason,
-        admin_notes: adminNotes
-      },
-      ip,
-      userAgent
-    );
-    await NotificationService.createNotification(
-      account.user_id,
-      "Trading Account Application Rejected",
-      `Your trading account registration was rejected. Reason: ${rejectionReason}`,
-      "trading_account",
-      { account_id: account.id, rejection_reason: rejectionReason }
-    );
-    return account;
-  }
-  /**
-   * Change account status (e.g. active, read_only, disabled, archived) (Admin workflow)
-   */
-  static async updateAccountStatus(adminId, accountId, newStatus, adminNotes, ip, userAgent) {
-    const account = await this.findRawAccount(accountId);
-    if (!account) {
-      const err = new Error("Trading account not found");
-      err.statusCode = 404;
-      throw err;
-    }
-    const oldStatus = account.status;
-    const now = /* @__PURE__ */ new Date();
-    const notes = adminNotes?.trim() || account.admin_notes;
-    const pool2 = getPool();
-    if (pool2) {
-      await query(
-        `UPDATE trading_accounts SET status = $1, admin_notes = $2, updated_at = $3 WHERE id = $4`,
-        [newStatus, notes, now, accountId]
-      );
-    } else {
-      const record2 = inMemoryDb.tradingAccounts.get(accountId);
-      if (record2) {
-        record2.status = newStatus;
-        record2.admin_notes = notes;
-        record2.updated_at = now;
-      }
-    }
-    account.status = newStatus;
-    account.admin_notes = notes;
-    account.updated_at = now;
-    await this.recordAuditLog(
-      adminId,
-      "TRADING_ACCOUNT_STATUS_CHANGED",
-      accountId,
-      {
-        account_number: account.account_number,
-        previous_status: oldStatus,
-        new_status: newStatus,
-        admin_notes: notes
-      },
-      ip,
-      userAgent
-    );
-    return account;
-  }
-  /**
-   * Update trading account metadata such as login, password, platform, server name, leverage, balance, status, terminal URL, etc. (Admin workflow)
-   */
-  static async updateMetadataAdmin(adminId, accountId, input2, ip, userAgent) {
-    const account = await this.findRawAccount(accountId);
-    if (!account) {
-      const err = new Error("Trading account not found");
-      err.statusCode = 404;
-      throw err;
-    }
-    const now = /* @__PURE__ */ new Date();
-    const updatedAccountNumber = input2.account_number?.trim() || account.account_number;
-    const updatedPlatform = input2.platform?.trim() || account.platform;
-    const updatedServer = input2.server_name !== void 0 ? input2.server_name?.trim() || "" : account.server_name;
-    const updatedCurrency = input2.currency ? input2.currency.trim().toUpperCase() : account.currency;
-    const updatedLeverage = input2.leverage || account.leverage;
-    const updatedBalance = input2.balance !== void 0 ? input2.balance.trim() : account.balance || (account.is_demo ? "10000.00" : "0.00");
-    const updatedStatus = input2.status || account.status;
-    const updatedTerminalUrl = input2.terminal_url !== void 0 ? input2.terminal_url?.trim() || null : account.terminal_url || null;
-    const updatedGroupTier = input2.group_tier !== void 0 ? input2.group_tier?.trim() || null : account.group_tier;
-    const updatedExternalAccountId = input2.external_account_id !== void 0 ? input2.external_account_id?.trim() || null : account.external_account_id || null;
-    const updatedTenantId = input2.tenant_id !== void 0 ? input2.tenant_id?.trim() || "default" : account.tenant_id || "default";
-    const updatedType = input2.account_type || account.account_type;
-    const updatedAdminNotes = input2.admin_notes !== void 0 ? input2.admin_notes?.trim() || null : account.admin_notes;
-    const updatedNickname = input2.nickname !== void 0 ? input2.nickname?.trim() || null : account.nickname;
-    const updatedPassword = account.is_demo && input2.password !== void 0 ? input2.password?.trim() || null : account.is_demo ? account.password : null;
-    account.account_number = updatedAccountNumber;
-    account.platform = updatedPlatform;
-    account.server_name = updatedServer;
-    account.currency = updatedCurrency;
-    account.leverage = updatedLeverage;
-    account.balance = updatedBalance;
-    account.status = updatedStatus;
-    account.terminal_url = updatedTerminalUrl;
-    account.group_tier = updatedGroupTier;
-    account.external_account_id = updatedExternalAccountId;
-    account.tenant_id = updatedTenantId;
-    account.account_type = updatedType;
-    account.admin_notes = updatedAdminNotes;
-    account.nickname = updatedNickname;
-    account.password = updatedPassword;
-    account.updated_at = now;
-    const pool2 = getPool();
-    if (pool2) {
-      const serializedNotes = this.serializeMetadata(account);
-      try {
-        await query(
-          `UPDATE trading_accounts 
-           SET account_number = $1, platform = $2, server_name = $3, currency = $4, leverage = $5, status = $6, group_tier = $7, external_account_id = $8, tenant_id = $9, account_type = $10, admin_notes = $11, nickname = $12, investor_notes = $13, updated_at = $14
-           WHERE id = $15`,
-          [
-            updatedAccountNumber,
-            updatedPlatform,
-            updatedServer,
-            updatedCurrency,
-            updatedLeverage,
-            updatedStatus,
-            updatedGroupTier,
-            updatedExternalAccountId,
-            updatedTenantId,
-            updatedType,
-            updatedAdminNotes,
-            updatedNickname,
-            serializedNotes,
-            now,
-            accountId
-          ]
-        );
-      } catch {
-        await query(
-          `UPDATE trading_accounts 
-           SET account_number = $1, platform = $2, server_name = $3, currency = $4, leverage = $5, status = $6, group_tier = $7, account_type = $8, admin_notes = $9, nickname = $10, investor_notes = $11, updated_at = $12
-           WHERE id = $13`,
-          [
-            updatedAccountNumber,
-            updatedPlatform,
-            updatedServer,
-            updatedCurrency,
-            updatedLeverage,
-            updatedStatus,
-            updatedGroupTier,
-            updatedType,
-            updatedAdminNotes,
-            updatedNickname,
-            serializedNotes,
-            now,
-            accountId
-          ]
-        );
-      }
-    } else {
-      const record2 = inMemoryDb.tradingAccounts.get(accountId);
-      if (record2) {
-        Object.assign(record2, account);
-      }
-    }
-    await this.recordAuditLog(
-      adminId,
-      "TRADING_ACCOUNT_METADATA_UPDATED",
-      accountId,
-      {
-        account_number: account.account_number,
-        platform: account.platform,
-        server_name: account.server_name,
-        currency: account.currency,
-        leverage: account.leverage,
-        balance: account.balance,
-        status: account.status,
-        terminal_url: account.terminal_url,
-        group_tier: account.group_tier,
-        external_account_id: account.external_account_id,
-        tenant_id: account.tenant_id,
-        account_type: account.account_type,
-        password_changed: account.is_demo && input2.password !== void 0,
-        admin_notes: updatedAdminNotes
-      },
-      ip,
-      userAgent
-    );
-    return account;
-  }
-  /**
-   * Admin direct provisioning of a trading account for a client.
-   * Authoritatively creates and maps the account record with status 'active'.
-   */
-  static async provisionAccountAdmin(adminUserId, input2, ip, userAgent) {
-    const pool2 = getPool();
-    let targetUser = null;
-    if (pool2) {
-      const userRows = await query(`SELECT * FROM users WHERE id = $1`, [input2.user_id]);
-      if (userRows.length === 0) {
-        const err = new Error("Target client user not found");
-        err.statusCode = 404;
-        throw err;
-      }
-      targetUser = userRows[0];
-    } else {
-      for (const u of inMemoryDb.users.values()) {
-        if (u.id === input2.user_id) {
-          targetUser = u;
-          break;
-        }
-      }
-      if (!targetUser) {
-        const err = new Error("Target client user not found");
-        err.statusCode = 404;
-        throw err;
-      }
-    }
-    if (targetUser.role !== "client") {
-      const err = new Error("Trading accounts can only be provisioned for client users");
-      err.statusCode = 400;
-      throw err;
-    }
-    const now = /* @__PURE__ */ new Date();
-    const accountId = crypto4.randomUUID();
-    const accountNumber = input2.account_number?.trim() || this.generateAccountNumber(input2.is_demo);
-    const defaultServer = input2.server_name?.trim() || (input2.is_demo ? `${input2.platform}-Demo-Server` : `${input2.platform}-Real-Server-1`);
-    const initialBalance = input2.initial_balance?.trim() || (input2.is_demo ? "10000.00" : "0.00");
-    const demoPassword = input2.is_demo ? "Demo@" + Math.floor(1e3 + Math.random() * 9e3) : null;
-    const terminalUrl = this.resolveDefaultTerminalUrl(input2.platform);
-    const currency = (input2.currency || "USD").toUpperCase();
-    const leverage = input2.leverage || "1:100";
-    const groupTier = input2.group_tier?.trim() || `${input2.account_type}_${currency.toLowerCase()}`;
-    const adminNotes = input2.admin_notes?.trim() || `Directly provisioned by administrator (${adminUserId})`;
-    const externalAccountId = input2.external_account_id?.trim() || null;
-    const nickname = input2.nickname?.trim() || null;
-    const newAccount = {
-      id: accountId,
-      account_number: accountNumber,
-      user_id: targetUser.id,
-      platform: input2.platform,
-      account_type: input2.account_type,
-      server_name: defaultServer,
-      currency,
-      leverage,
-      status: "active",
-      nickname,
-      is_demo: input2.is_demo,
-      group_tier: groupTier,
-      external_account_id: externalAccountId,
-      tenant_id: "default",
-      investor_notes: null,
-      admin_notes: adminNotes,
-      rejection_reason: null,
-      approved_at: now,
-      approved_by: adminUserId,
-      created_at: now,
-      updated_at: now,
-      password: demoPassword,
-      balance: initialBalance,
-      terminal_url: terminalUrl
-    };
-    if (pool2) {
-      const serializedNotes = this.serializeMetadata(newAccount);
-      try {
-        await query(
-          `INSERT INTO trading_accounts 
-           (id, account_number, user_id, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, group_tier, external_account_id, tenant_id, investor_notes, admin_notes, created_at, updated_at, approved_at, approved_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
-          [
-            newAccount.id,
-            newAccount.account_number,
-            newAccount.user_id,
-            newAccount.platform,
-            newAccount.account_type,
-            newAccount.server_name,
-            newAccount.currency,
-            newAccount.leverage,
-            newAccount.status,
-            newAccount.nickname,
-            newAccount.is_demo,
-            newAccount.group_tier,
-            newAccount.external_account_id,
-            newAccount.tenant_id,
-            serializedNotes,
-            newAccount.admin_notes,
-            newAccount.created_at,
-            newAccount.updated_at,
-            newAccount.approved_at,
-            newAccount.approved_by
-          ]
-        );
-      } catch {
-        await query(
-          `INSERT INTO trading_accounts 
-           (id, account_number, user_id, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, group_tier, investor_notes, admin_notes, created_at, updated_at, approved_at, approved_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
-          [
-            newAccount.id,
-            newAccount.account_number,
-            newAccount.user_id,
-            newAccount.platform,
-            newAccount.account_type,
-            newAccount.server_name,
-            newAccount.currency,
-            newAccount.leverage,
-            newAccount.status,
-            newAccount.nickname,
-            newAccount.is_demo,
-            newAccount.group_tier,
-            serializedNotes,
-            newAccount.admin_notes,
-            newAccount.created_at,
-            newAccount.updated_at,
-            newAccount.approved_at,
-            newAccount.approved_by
-          ]
-        );
-      }
-    } else {
-      inMemoryDb.tradingAccounts.set(newAccount.id, { ...newAccount });
-    }
-    await this.recordAuditLog(
-      adminUserId,
-      "TRADING_ACCOUNT_PROVISIONED_ADMIN",
-      newAccount.id,
-      {
-        account_id: newAccount.id,
-        account_number: newAccount.account_number,
-        user_id: targetUser.id,
-        user_email: targetUser.email,
-        platform: newAccount.platform,
-        account_type: newAccount.account_type,
-        currency: newAccount.currency,
-        leverage: newAccount.leverage,
-        is_demo: newAccount.is_demo,
-        server_name: newAccount.server_name,
-        group_tier: newAccount.group_tier,
-        external_account_id: newAccount.external_account_id,
-        admin_notes: adminNotes
-      },
-      ip,
-      userAgent
-    );
-    await NotificationService.createNotification(
-      targetUser.id,
-      "Trading Account Provisioned",
-      `An administrator has provisioned a new ${newAccount.is_demo ? "Demo" : "Live"} trading account #${newAccount.account_number} (${newAccount.platform}) for you.`,
-      "trading_account",
-      { account_id: newAccount.id, account_number: newAccount.account_number, platform: newAccount.platform }
-    );
-    return newAccount;
-  }
-  /**
-   * Updates balance of a trading account (used by financial transfer approval workflow)
-   */
-  static async updateAccountBalance(accountId, newBalance) {
-    const account = await this.findRawAccount(accountId);
-    if (!account) {
-      const err = new Error("Trading account not found");
-      err.statusCode = 404;
-      throw err;
-    }
-    const now = /* @__PURE__ */ new Date();
-    account.balance = newBalance;
-    account.updated_at = now;
-    const pool2 = getPool();
-    if (pool2) {
-      const serializedNotes = this.serializeMetadata(account);
-      try {
-        await query(
-          `UPDATE trading_accounts 
-           SET balance = $1, investor_notes = $2, updated_at = $3
-           WHERE id = $4`,
-          [newBalance, serializedNotes, now, accountId]
-        );
-      } catch (err) {
-        await query(
-          `UPDATE trading_accounts 
-           SET investor_notes = $1, updated_at = $2
-           WHERE id = $3`,
-          [serializedNotes, now, accountId]
-        );
-      }
-    } else {
-      const record2 = inMemoryDb.tradingAccounts.get(accountId);
-      if (record2) {
-        record2.balance = newBalance;
-        record2.updated_at = now;
-        record2.investor_notes = this.serializeMetadata(record2);
-      }
-    }
-    return account;
-  }
-  /**
-   * Helper to fetch an account record without ownership checks (for admin & internal service operations)
-   */
-  static async findRawAccount(accountId) {
-    const pool2 = getPool();
-    if (pool2) {
-      const rows = await query(
-        `SELECT * FROM trading_accounts WHERE id = $1`,
-        [accountId]
-      );
-      return rows[0] ? this.hydrateAccountRecord(rows[0]) : null;
-    }
-    const record2 = inMemoryDb.tradingAccounts.get(accountId);
-    return record2 ? this.hydrateAccountRecord(record2) : null;
-  }
-  /**
-   * Admin-only trading account deletion or archiving.
-   * Checks for ownership, pending transfers, active balance, and financial history.
-   * If the trading account has financial transfer history, it is archived to preserve
-   * immutable ledger records for regulatory compliance.
-   * If it has no financial history, it is cleanly deleted.
-   */
-  static async deleteAccountAdmin(adminUserId, accountId, ip, userAgent) {
-    const pool2 = getPool();
-    if (pool2) {
-      const accRows = await query(`SELECT * FROM trading_accounts WHERE id = $1`, [accountId]);
-      if (accRows.length === 0) {
-        const err = new Error("Trading account not found");
-        err.statusCode = 404;
-        throw err;
-      }
-      const rawAccount = accRows[0];
-      const account = this.hydrateAccountRecord(rawAccount);
-      const pendingTransfers = await query(
-        `SELECT id FROM account_transfers WHERE trading_account_id = $1 AND status = 'pending'`,
-        [accountId]
-      );
-      if (pendingTransfers.length > 0) {
-        const err = new Error("Cannot delete trading account with pending transfer requests. Please approve or reject pending transfers first.");
-        err.statusCode = 400;
-        throw err;
-      }
-      if (!account.is_demo && parseFloat(account.balance || "0") > 0) {
-        const err = new Error(`Cannot delete trading account with active balance (${account.balance} ${account.currency}). Transfer or settle balance first.`);
-        err.statusCode = 400;
-        throw err;
-      }
-      const transferCountRows = await query(
-        `SELECT COUNT(*) as count FROM account_transfers WHERE trading_account_id = $1`,
-        [accountId]
-      );
-      const transferCount = parseInt(transferCountRows[0]?.count || "0", 10);
-      if (transferCount > 0) {
-        const now = /* @__PURE__ */ new Date();
-        const meta3 = this.parseMetadata(rawAccount);
-        meta3.archived_at = now.toISOString();
-        meta3.archived_by = adminUserId;
-        meta3.archive_reason = "Archived via admin delete workflow to retain transfer history";
-        const serialized = this.serializeMetadata(meta3);
-        await query(
-          `UPDATE trading_accounts SET status = 'archived', investor_notes = $1, updated_at = $2 WHERE id = $3`,
-          [serialized, now, accountId]
-        );
-        await this.recordAuditLog(
-          adminUserId,
-          "TRADING_ACCOUNT_ARCHIVED",
-          accountId,
-          {
-            account_id: accountId,
-            account_number: account.account_number,
-            user_id: account.user_id,
-            transfer_count_retained: transferCount,
-            reason: "Account archived to preserve financial transfer ledger history"
-          },
-          ip,
-          userAgent
-        );
-        return {
-          success: true,
-          action: "archived",
-          message: "Trading account archived. Financial transfer history has been preserved for regulatory compliance.",
-          account_id: accountId
-        };
-      } else {
-        await query(`DELETE FROM trading_password_resets WHERE trading_account_id = $1`, [accountId]);
-        await query(`DELETE FROM trading_accounts WHERE id = $1`, [accountId]);
-        await this.recordAuditLog(
-          adminUserId,
-          "TRADING_ACCOUNT_DELETED",
-          accountId,
-          {
-            account_id: accountId,
-            account_number: account.account_number,
-            user_id: account.user_id,
-            reason: "Trading account deleted with zero prior transfer history"
-          },
-          ip,
-          userAgent
-        );
-        return {
-          success: true,
-          action: "deleted",
-          message: "Trading account deleted successfully.",
-          account_id: accountId
-        };
-      }
-    } else {
-      const record2 = inMemoryDb.tradingAccounts.get(accountId);
-      if (!record2) {
-        const err = new Error("Trading account not found");
-        err.statusCode = 404;
-        throw err;
-      }
-      const account = this.hydrateAccountRecord(record2);
-      const pendingTransfers = Array.from(inMemoryDb.accountTransfers.values()).filter(
-        (tr) => tr.trading_account_id === accountId && tr.status === "pending"
-      );
-      if (pendingTransfers.length > 0) {
-        const err = new Error("Cannot delete trading account with pending transfer requests. Please approve or reject pending transfers first.");
-        err.statusCode = 400;
-        throw err;
-      }
-      if (!account.is_demo && parseFloat(account.balance || "0") > 0) {
-        const err = new Error(`Cannot delete trading account with active balance (${account.balance} ${account.currency}). Transfer or settle balance first.`);
-        err.statusCode = 400;
-        throw err;
-      }
-      const transferCount = Array.from(inMemoryDb.accountTransfers.values()).filter(
-        (tr) => tr.trading_account_id === accountId
-      ).length;
-      if (transferCount > 0) {
-        record2.status = "archived";
-        record2.updated_at = /* @__PURE__ */ new Date();
-        const meta3 = this.parseMetadata(record2);
-        meta3.archived_at = (/* @__PURE__ */ new Date()).toISOString();
-        meta3.archived_by = adminUserId;
-        meta3.archive_reason = "Archived via admin delete workflow to retain transfer history";
-        record2.investor_notes = this.serializeMetadata(meta3);
-        await this.recordAuditLog(
-          adminUserId,
-          "TRADING_ACCOUNT_ARCHIVED",
-          accountId,
-          {
-            account_id: accountId,
-            account_number: account.account_number,
-            user_id: account.user_id,
-            transfer_count_retained: transferCount,
-            reason: "Account archived to preserve financial transfer ledger history"
-          },
-          ip,
-          userAgent
-        );
-        return {
-          success: true,
-          action: "archived",
-          message: "Trading account archived. Financial transfer history has been preserved for regulatory compliance.",
-          account_id: accountId
-        };
-      } else {
-        for (const [id, r5] of inMemoryDb.tradingPasswordResets.entries()) {
-          if (r5.trading_account_id === accountId) inMemoryDb.tradingPasswordResets.delete(id);
-        }
-        inMemoryDb.tradingAccounts.delete(accountId);
-        await this.recordAuditLog(
-          adminUserId,
-          "TRADING_ACCOUNT_DELETED",
-          accountId,
-          {
-            account_id: accountId,
-            account_number: account.account_number,
-            user_id: account.user_id,
-            reason: "Trading account deleted with zero prior transfer history"
-          },
-          ip,
-          userAgent
-        );
-        return {
-          success: true,
-          action: "deleted",
-          message: "Trading account deleted successfully.",
-          account_id: accountId
-        };
-      }
-    }
-  }
-  /**
-   * Admin-only assignment / mapping of a trading account to a client.
-   * Verifies target client exists and is a client, updates user_id mapping,
-   * and records an audit log.
-   */
-  static async assignAccountToClientAdmin(adminUserId, accountId, targetClientId, ip, userAgent) {
-    const pool2 = getPool();
-    let previousUserId = "";
-    let accountNum = "";
-    if (pool2) {
-      const clientRows = await query(`SELECT id, role, email FROM users WHERE id = $1`, [targetClientId]);
-      if (clientRows.length === 0 || clientRows[0].role !== "client") {
-        const err = new Error("Target client account not found");
-        err.statusCode = 404;
-        throw err;
-      }
-      const accRows = await query(`SELECT * FROM trading_accounts WHERE id = $1`, [accountId]);
-      if (accRows.length === 0) {
-        const err = new Error("Trading account not found");
-        err.statusCode = 404;
-        throw err;
-      }
-      previousUserId = accRows[0].user_id;
-      accountNum = accRows[0].account_number;
-      await query(
-        `UPDATE trading_accounts SET user_id = $1, updated_at = NOW() WHERE id = $2`,
-        [targetClientId, accountId]
-      );
-    } else {
-      const targetUser = Array.from(inMemoryDb.users.values()).find((u) => u.id === targetClientId);
-      if (!targetUser || targetUser.role !== "client") {
-        const err = new Error("Target client account not found");
-        err.statusCode = 404;
-        throw err;
-      }
-      const record2 = inMemoryDb.tradingAccounts.get(accountId);
-      if (!record2) {
-        const err = new Error("Trading account not found");
-        err.statusCode = 404;
-        throw err;
-      }
-      previousUserId = record2.user_id;
-      accountNum = record2.account_number;
-      record2.user_id = targetClientId;
-      record2.updated_at = /* @__PURE__ */ new Date();
-    }
-    await this.recordAuditLog(
-      adminUserId,
-      "TRADING_ACCOUNT_ASSIGNED",
-      accountId,
-      {
-        account_id: accountId,
-        account_number: accountNum,
-        previous_user_id: previousUserId,
-        new_user_id: targetClientId
-      },
-      ip,
-      userAgent
-    );
-    const updated = await this.getAccountByIdAdmin(accountId);
-    return updated;
-  }
-  /**
-   * Client-side trading password reset REQUEST workflow.
-   * Strict IDOR protection: verified against requesting user's account.
-   * Does NOT change password automatically; creates a pending request for admin review.
-   */
-  static async requestPasswordReset(userId, accountId, reason, ip, userAgent) {
-    const account = await this.getUserAccountById(userId, accountId);
-    if (!account) {
-      const err = new Error("Trading account not found");
-      err.statusCode = 404;
-      throw err;
-    }
-    if (account.status === "archived" || account.status === "disabled") {
-      const err = new Error(`Cannot request password reset for account with status '${account.status}'.`);
-      err.statusCode = 400;
-      throw err;
-    }
-    const pool2 = getPool();
-    const requestId = crypto4.randomUUID();
-    const now = /* @__PURE__ */ new Date();
-    if (pool2) {
-      const existingPending = await query(
-        `SELECT id FROM trading_password_resets WHERE trading_account_id = $1 AND status = 'pending'`,
-        [accountId]
-      );
-      if (existingPending.length > 0) {
-        const err = new Error("A password reset request for this trading account is already pending administrative review.");
-        err.statusCode = 400;
-        throw err;
-      }
-      const rows = await query(
-        `INSERT INTO trading_password_resets (id, trading_account_id, user_id, account_number, status, reason, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, 'pending', $5, $6, $6)
-         RETURNING *`,
-        [requestId, accountId, userId, account.account_number, reason?.trim() || null, now]
-      );
-      await this.recordAuditLog(
-        userId,
-        "TRADING_PASSWORD_RESET_REQUESTED",
-        accountId,
-        {
-          request_id: requestId,
-          account_id: accountId,
-          account_number: account.account_number,
-          reason: reason?.trim() || null
-        },
-        ip,
-        userAgent
-      );
-      await NotificationService.createNotification(
-        userId,
-        "Trading Password Reset Requested",
-        `Your password reset request for trading account #${account.account_number} has been submitted and is pending administrative review.`,
-        "trading_account",
-        { account_id: accountId, request_id: requestId }
-      );
-      return rows[0];
-    } else {
-      const existingPending = Array.from(inMemoryDb.tradingPasswordResets.values()).find(
-        (r5) => r5.trading_account_id === accountId && r5.status === "pending"
-      );
-      if (existingPending) {
-        const err = new Error("A password reset request for this trading account is already pending administrative review.");
-        err.statusCode = 400;
-        throw err;
-      }
-      const record2 = {
-        id: requestId,
-        trading_account_id: accountId,
-        user_id: userId,
-        account_number: account.account_number,
-        status: "pending",
-        reason: reason?.trim() || null,
-        admin_notes: null,
-        processed_by: null,
-        processed_at: null,
-        created_at: now,
-        updated_at: now
-      };
-      inMemoryDb.tradingPasswordResets.set(requestId, record2);
-      await this.recordAuditLog(
-        userId,
-        "TRADING_PASSWORD_RESET_REQUESTED",
-        accountId,
-        {
-          request_id: requestId,
-          account_id: accountId,
-          account_number: account.account_number,
-          reason: reason?.trim() || null
-        },
-        ip,
-        userAgent
-      );
-      await NotificationService.createNotification(
-        userId,
-        "Trading Password Reset Requested",
-        `Your password reset request for trading account #${account.account_number} has been submitted and is pending administrative review.`,
-        "trading_account",
-        { account_id: accountId, request_id: requestId }
-      );
-      return record2;
-    }
-  }
-  /**
-   * Client: List own trading account password reset requests
-   */
-  static async getUserPasswordResets(userId) {
-    const pool2 = getPool();
-    if (pool2) {
-      const rows = await query(
-        `SELECT * FROM trading_password_resets WHERE user_id = $1 ORDER BY created_at DESC`,
-        [userId]
-      );
-      return rows;
-    } else {
-      return Array.from(inMemoryDb.tradingPasswordResets.values()).filter((r5) => r5.user_id === userId).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime());
-    }
-  }
-  /**
-   * Admin: List all password reset requests with user and account metadata
-   */
-  static async getAllPasswordResetsAdmin(filters) {
-    const pool2 = getPool();
-    if (pool2) {
-      let sql = `
-        SELECT r.*,
-               u.first_name as client_first_name, u.last_name as client_last_name, u.email as client_email,
-               ta.platform, ta.server_name, ta.is_demo, ta.currency, ta.balance
-        FROM trading_password_resets r
-        JOIN users u ON u.id = r.user_id
-        LEFT JOIN trading_accounts ta ON ta.id = r.trading_account_id
-        WHERE 1=1
-      `;
-      const params = [];
-      if (filters?.status) {
-        params.push(filters.status);
-        sql += ` AND r.status = $${params.length}`;
-      }
-      if (filters?.search) {
-        params.push(`%${filters.search.toLowerCase()}%`);
-        sql += ` AND (LOWER(r.account_number) LIKE $${params.length} OR LOWER(u.email) LIKE $${params.length} OR LOWER(u.first_name) LIKE $${params.length} OR LOWER(u.last_name) LIKE $${params.length})`;
-      }
-      sql += ` ORDER BY r.created_at DESC`;
-      return await query(sql, params);
-    } else {
-      let list2 = Array.from(inMemoryDb.tradingPasswordResets.values());
-      if (filters?.status) {
-        list2 = list2.filter((r5) => r5.status === filters.status);
-      }
-      if (filters?.search) {
-        const s2 = filters.search.toLowerCase();
-        list2 = list2.filter((r5) => {
-          const user = Array.from(inMemoryDb.users.values()).find((u) => u.id === r5.user_id);
-          return r5.account_number.toLowerCase().includes(s2) || user && (user.email.toLowerCase().includes(s2) || user.first_name.toLowerCase().includes(s2) || user.last_name.toLowerCase().includes(s2));
-        });
-      }
-      return list2.map((r5) => {
-        const user = Array.from(inMemoryDb.users.values()).find((u) => u.id === r5.user_id);
-        const ta = inMemoryDb.tradingAccounts.get(r5.trading_account_id);
-        return {
-          ...r5,
-          client_first_name: user?.first_name || "",
-          client_last_name: user?.last_name || "",
-          client_email: user?.email || "",
-          platform: ta?.platform || "",
-          server_name: ta?.server_name || "",
-          is_demo: ta?.is_demo || false,
-          currency: ta?.currency || "USD",
-          balance: ta?.balance || "0.00"
-        };
-      }).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime());
-    }
-  }
-  /**
-   * Admin: Process password reset request (approve or reject)
-   */
-  static async processPasswordResetAdmin(adminUserId, requestId, action, input2, ip, userAgent) {
-    const pool2 = getPool();
-    const now = /* @__PURE__ */ new Date();
-    if (pool2) {
-      const rows = await query(`SELECT * FROM trading_password_resets WHERE id = $1`, [requestId]);
-      if (rows.length === 0) {
-        const err = new Error("Password reset request not found");
-        err.statusCode = 404;
-        throw err;
-      }
-      const resetReq = rows[0];
-      if (resetReq.status !== "pending") {
-        const err = new Error("This password reset request has already been processed");
-        err.statusCode = 400;
-        throw err;
-      }
-      const accRows = await query(`SELECT * FROM trading_accounts WHERE id = $1`, [resetReq.trading_account_id]);
-      const rawAccount = accRows[0];
-      const account = rawAccount ? this.hydrateAccountRecord(rawAccount) : null;
-      if (action === "approve") {
-        const adminNotes = input2?.admin_notes?.trim() || "Password reset approved by operations desk";
-        await query(
-          `UPDATE trading_password_resets
-           SET status = 'approved', processed_by = $1, processed_at = $2, admin_notes = $3, updated_at = $2
-           WHERE id = $4`,
-          [adminUserId, now, adminNotes, requestId]
-        );
-        if (account && account.is_demo && input2?.new_password) {
-          const meta3 = this.parseMetadata(rawAccount);
-          meta3.demo_password = input2.new_password;
-          const serialized = this.serializeMetadata(meta3);
-          await query(
-            `UPDATE trading_accounts SET investor_notes = $1, updated_at = $2 WHERE id = $3`,
-            [serialized, now, account.id]
-          );
-        }
-        await this.recordAuditLog(
-          adminUserId,
-          "TRADING_PASSWORD_RESET_APPROVED",
-          resetReq.trading_account_id,
-          {
-            request_id: requestId,
-            account_number: resetReq.account_number,
-            is_demo: account?.is_demo ?? false,
-            admin_notes: adminNotes
-          },
-          ip,
-          userAgent
-        );
-        await NotificationService.createNotification(
-          resetReq.user_id,
-          "Trading Password Reset Approved",
-          `Your password reset request for trading account #${resetReq.account_number} has been approved.${input2?.admin_notes ? ` Note: ${input2.admin_notes}` : ""}`,
-          "trading_account",
-          { account_id: resetReq.trading_account_id, request_id: requestId }
-        );
-        return {
-          success: true,
-          message: "Password reset request approved.",
-          data: { ...resetReq, status: "approved", processed_by: adminUserId, processed_at: now, admin_notes: adminNotes },
-          new_password: input2?.new_password || null
-        };
-      } else {
-        const reason = input2?.rejection_reason?.trim() || input2?.admin_notes?.trim() || "Request rejected by administrator";
-        await query(
-          `UPDATE trading_password_resets
-           SET status = 'rejected', processed_by = $1, processed_at = $2, admin_notes = $3, updated_at = $2
-           WHERE id = $4`,
-          [adminUserId, now, reason, requestId]
-        );
-        await this.recordAuditLog(
-          adminUserId,
-          "TRADING_PASSWORD_RESET_REJECTED",
-          resetReq.trading_account_id,
-          {
-            request_id: requestId,
-            account_number: resetReq.account_number,
-            rejection_reason: reason
-          },
-          ip,
-          userAgent
-        );
-        await NotificationService.createNotification(
-          resetReq.user_id,
-          "Trading Password Reset Rejected",
-          `Your password reset request for trading account #${resetReq.account_number} was rejected. Reason: ${reason}`,
-          "trading_account",
-          { account_id: resetReq.trading_account_id, request_id: requestId }
-        );
-        return {
-          success: true,
-          message: "Password reset request rejected.",
-          data: { ...resetReq, status: "rejected", processed_by: adminUserId, processed_at: now, admin_notes: reason }
-        };
-      }
-    } else {
-      const resetReq = inMemoryDb.tradingPasswordResets.get(requestId);
-      if (!resetReq) {
-        const err = new Error("Password reset request not found");
-        err.statusCode = 404;
-        throw err;
-      }
-      if (resetReq.status !== "pending") {
-        const err = new Error("This password reset request has already been processed");
-        err.statusCode = 400;
-        throw err;
-      }
-      const rawAccount = inMemoryDb.tradingAccounts.get(resetReq.trading_account_id);
-      const account = rawAccount ? this.hydrateAccountRecord(rawAccount) : null;
-      if (action === "approve") {
-        const adminNotes = input2?.admin_notes?.trim() || "Password reset approved by operations desk";
-        resetReq.status = "approved";
-        resetReq.processed_by = adminUserId;
-        resetReq.processed_at = now;
-        resetReq.admin_notes = adminNotes;
-        resetReq.updated_at = now;
-        if (account && account.is_demo && input2?.new_password) {
-          const meta3 = this.parseMetadata(rawAccount);
-          meta3.demo_password = input2.new_password;
-          rawAccount.investor_notes = this.serializeMetadata(meta3);
-          rawAccount.updated_at = now;
-        }
-        await this.recordAuditLog(
-          adminUserId,
-          "TRADING_PASSWORD_RESET_APPROVED",
-          resetReq.trading_account_id,
-          {
-            request_id: requestId,
-            account_number: resetReq.account_number,
-            is_demo: account?.is_demo ?? false,
-            admin_notes: adminNotes
-          },
-          ip,
-          userAgent
-        );
-        await NotificationService.createNotification(
-          resetReq.user_id,
-          "Trading Password Reset Approved",
-          `Your password reset request for trading account #${resetReq.account_number} has been approved.${input2?.admin_notes ? ` Note: ${input2.admin_notes}` : ""}`,
-          "trading_account",
-          { account_id: resetReq.trading_account_id, request_id: requestId }
-        );
-        return {
-          success: true,
-          message: "Password reset request approved.",
-          data: resetReq,
-          new_password: input2?.new_password || null
-        };
-      } else {
-        const reason = input2?.rejection_reason?.trim() || input2?.admin_notes?.trim() || "Request rejected by administrator";
-        resetReq.status = "rejected";
-        resetReq.processed_by = adminUserId;
-        resetReq.processed_at = now;
-        resetReq.admin_notes = reason;
-        resetReq.updated_at = now;
-        await this.recordAuditLog(
-          adminUserId,
-          "TRADING_PASSWORD_RESET_REJECTED",
-          resetReq.trading_account_id,
-          {
-            request_id: requestId,
-            account_number: resetReq.account_number,
-            rejection_reason: reason
-          },
-          ip,
-          userAgent
-        );
-        await NotificationService.createNotification(
-          resetReq.user_id,
-          "Trading Password Reset Rejected",
-          `Your password reset request for trading account #${resetReq.account_number} was rejected. Reason: ${reason}`,
-          "trading_account",
-          { account_id: resetReq.trading_account_id, request_id: requestId }
-        );
-        return {
-          success: true,
-          message: "Password reset request rejected.",
-          data: resetReq
-        };
-      }
-    }
-  }
-};
-
-// netlify/functions/services/auth.service.ts
-var AuthService = class {
-  /**
-   * Records an audit log entry for authentication and security lifecycle events
-   */
-  static async recordAuditLog(actorId, action, entityType, entityId, details, ip, userAgent) {
-    const pool2 = getPool();
-    const now = /* @__PURE__ */ new Date();
-    const auditId = crypto5.randomUUID();
-    const sanitizedIp = ip ? String(ip).split(",")[0].trim().substring(0, 100) : null;
-    const sanitizedUserAgent = userAgent ? String(userAgent).substring(0, 500) : null;
-    if (pool2) {
-      await query(
-        `INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, ip_address, user_agent, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [auditId, actorId, action, entityType, entityId, JSON.stringify(details), sanitizedIp, sanitizedUserAgent, now]
-      );
-    } else {
-      const record2 = {
-        id: auditId,
-        actor_id: actorId,
-        action,
-        entity_type: entityType,
-        entity_id: entityId,
-        details,
-        ip_address: sanitizedIp,
-        user_agent: sanitizedUserAgent,
-        created_at: now
-      };
-      inMemoryDb.auditLogs.unshift(record2);
-    }
-  }
-  /**
-   * Register a new user with standard 'client' role and password hashing
-   */
-  static async register(input2, ip, userAgent) {
-    const emailNormalized = input2.email.toLowerCase();
-    if (getPool()) {
-      const existing = await query("SELECT id FROM users WHERE email = $1", [emailNormalized]);
-      if (existing.length > 0) {
-        throw new Error("An account with this email already exists");
-      }
-    } else {
-      if (inMemoryDb.users.has(emailNormalized)) {
-        throw new Error("An account with this email already exists");
-      }
-    }
-    const passwordHash = await bcryptjs_default.hash(input2.password, 10);
-    const userId = crypto5.randomUUID();
-    const now = /* @__PURE__ */ new Date();
-    const newUser = {
-      id: userId,
-      email: emailNormalized,
-      password_hash: passwordHash,
-      role: "client",
-      status: "active",
-      first_name: input2.first_name,
-      last_name: input2.last_name,
-      country: input2.country || "US",
-      phone: input2.phone || null,
-      preferred_currency: input2.preferred_currency || "USD",
-      created_at: now,
-      updated_at: now
-    };
-    if (getPool()) {
-      await query(
-        `INSERT INTO users (id, email, password_hash, role, status, first_name, last_name, country, phone, preferred_currency, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-        [
-          newUser.id,
-          newUser.email,
-          newUser.password_hash,
-          newUser.role,
-          newUser.status,
-          newUser.first_name,
-          newUser.last_name,
-          newUser.country,
-          newUser.phone,
-          newUser.preferred_currency,
-          newUser.created_at,
-          newUser.updated_at
-        ]
-      );
-      await query(
-        `INSERT INTO wallets (id, user_id, currency, balance, reserved_balance, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [crypto5.randomUUID(), newUser.id, newUser.preferred_currency, "0.00", "0.00", now, now]
-      );
-    } else {
-      inMemoryDb.users.set(emailNormalized, newUser);
-      const userWallet = {
-        id: crypto5.randomUUID(),
-        user_id: newUser.id,
-        currency: newUser.preferred_currency,
-        balance: "0.00",
-        reserved_balance: "0.00",
-        created_at: now,
-        updated_at: now
-      };
-      inMemoryDb.wallets.set(userWallet.id, userWallet);
-      inMemoryDb.wallets.set(`${userWallet.user_id}_${userWallet.currency}`, userWallet);
-    }
-    if (newUser.role === "client") {
-      try {
-        await TradingAccountService.provisionDefaultDemoAccount(
-          newUser.id,
-          newUser.preferred_currency || "USD",
-          ip,
-          userAgent
-        );
-      } catch (demoErr) {
-        console.error("Failed to auto-provision default demo account during client registration:", demoErr);
-      }
-    }
-    const token = generateToken(newUser);
-    await this.recordAuditLog(
-      newUser.id,
-      "USER_REGISTERED",
-      "user",
-      newUser.id,
-      {
-        email: newUser.email,
-        role: newUser.role,
-        country: newUser.country,
-        preferred_currency: newUser.preferred_currency
-      },
-      ip,
-      userAgent
-    );
-    return {
-      token,
-      user: {
-        id: newUser.id,
-        email: newUser.email,
-        role: newUser.role,
-        status: newUser.status,
-        first_name: newUser.first_name,
-        last_name: newUser.last_name,
-        preferred_currency: newUser.preferred_currency
-      }
-    };
-  }
-  /**
-   * Authenticate user with password comparison and generate token
-   */
-  static async login(input2, ip, userAgent) {
-    const emailNormalized = input2.email.toLowerCase();
-    let user = null;
-    if (getPool()) {
-      const rows = await query("SELECT * FROM users WHERE email = $1", [emailNormalized]);
-      user = rows[0] || null;
-    } else {
-      user = inMemoryDb.users.get(emailNormalized) || null;
-    }
-    if (!user) {
-      throw new Error("Invalid email or password");
-    }
-    if (user.status !== "active") {
-      throw new Error(`Your account is currently ${user.status}. Please contact support.`);
-    }
-    const isValid = await bcryptjs_default.compare(input2.password, user.password_hash);
-    if (!isValid) {
-      throw new Error("Invalid email or password");
-    }
-    const now = /* @__PURE__ */ new Date();
-    user.last_login_at = now;
-    if (getPool()) {
-      await query("UPDATE users SET last_login_at = $1 WHERE id = $2", [now, user.id]);
-    }
-    const token = generateToken(user);
-    await this.recordAuditLog(
-      user.id,
-      "USER_LOGIN",
-      "user",
-      user.id,
-      {
-        email: user.email,
-        role: user.role
-      },
-      ip,
-      userAgent
-    );
-    return {
-      token,
-      user: {
-        id: user.id,
-        email: user.email,
-        role: user.role,
-        status: user.status,
-        first_name: user.first_name,
-        last_name: user.last_name,
-        preferred_currency: user.preferred_currency
-      }
-    };
-  }
-  /**
-   * Request a password reset token
-   */
-  static async forgotPassword(input2, ip, userAgent) {
-    const emailNormalized = input2.email.toLowerCase();
-    let userExists = false;
-    if (getPool()) {
-      const rows = await query("SELECT id FROM users WHERE email = $1", [emailNormalized]);
-      userExists = rows.length > 0;
-    } else {
-      userExists = inMemoryDb.users.has(emailNormalized);
-    }
-    await this.recordAuditLog(
-      null,
-      "PASSWORD_RESET_REQUESTED",
-      "user",
-      null,
-      { email: emailNormalized, user_exists: userExists },
-      ip,
-      userAgent
-    );
-    if (!userExists) {
-      return {
-        message: "If an account exists with that email, a password reset link has been dispatched."
-      };
-    }
-    if (getPool()) {
-      await query("UPDATE password_resets SET used_at = NOW() WHERE email = $1 AND used_at IS NULL", [emailNormalized]);
-    } else {
-      for (const rec of inMemoryDb.passwordResets.values()) {
-        if (rec.email === emailNormalized && !rec.used_at) {
-          rec.used_at = /* @__PURE__ */ new Date();
-        }
-      }
-    }
-    const rawToken = crypto5.randomBytes(32).toString("hex");
-    const tokenHash = crypto5.createHash("sha256").update(rawToken).digest("hex");
-    const expiresAt = new Date(Date.now() + 60 * 60 * 1e3);
-    const resetRecord = {
-      id: crypto5.randomUUID(),
-      email: emailNormalized,
-      token_hash: tokenHash,
-      expires_at: expiresAt,
-      created_at: /* @__PURE__ */ new Date()
-    };
-    if (getPool()) {
-      await query(
-        `INSERT INTO password_resets (id, email, token_hash, expires_at, created_at)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [resetRecord.id, resetRecord.email, resetRecord.token_hash, resetRecord.expires_at, resetRecord.created_at]
-      );
-    } else {
-      inMemoryDb.passwordResets.set(tokenHash, resetRecord);
-    }
-    await MailService.sendPasswordResetEmail(emailNormalized, rawToken);
-    return {
-      message: "If an account exists with that email, a password reset link has been dispatched."
-    };
-  }
-  /**
-   * Complete password reset using valid unexpired token
-   */
-  static async resetPassword(input2, ip, userAgent) {
-    if (!input2.token || input2.token.trim() === "") {
-      throw new Error("Invalid or expired password reset token");
-    }
-    const tokenHash = crypto5.createHash("sha256").update(input2.token.trim()).digest("hex");
-    let email3 = null;
-    let resetId = null;
-    if (getPool()) {
-      const rows = await query(
-        "SELECT * FROM password_resets WHERE token_hash = $1 AND expires_at > NOW() AND used_at IS NULL",
-        [tokenHash]
-      );
-      if (rows.length > 0) {
-        email3 = rows[0].email;
-        resetId = rows[0].id;
-      }
-    } else {
-      const record2 = inMemoryDb.passwordResets.get(tokenHash);
-      if (record2 && record2.expires_at > /* @__PURE__ */ new Date() && !record2.used_at) {
-        email3 = record2.email;
-        resetId = record2.id;
-      }
-    }
-    if (!email3 || !resetId) {
-      throw new Error("Invalid or expired password reset token");
-    }
-    const newPasswordHash = await bcryptjs_default.hash(input2.password, 10);
-    const now = /* @__PURE__ */ new Date();
-    if (getPool()) {
-      await query("UPDATE users SET password_hash = $1, updated_at = $2 WHERE email = $3", [
-        newPasswordHash,
-        now,
-        email3
-      ]);
-      await query("UPDATE password_resets SET used_at = $1 WHERE id = $2", [now, resetId]);
-      await query("UPDATE password_resets SET used_at = $1 WHERE email = $2 AND used_at IS NULL", [now, email3]);
-    } else {
-      const user = inMemoryDb.users.get(email3);
-      if (user) {
-        user.password_hash = newPasswordHash;
-        user.updated_at = now;
-      }
-      const record2 = inMemoryDb.passwordResets.get(tokenHash);
-      if (record2) {
-        record2.used_at = now;
-      }
-      for (const rec of inMemoryDb.passwordResets.values()) {
-        if (rec.email === email3 && !rec.used_at) {
-          rec.used_at = now;
-        }
-      }
-    }
-    let targetUserId = null;
-    if (getPool()) {
-      const userRows = await query("SELECT id FROM users WHERE email = $1", [email3]);
-      targetUserId = userRows[0]?.id || null;
-    } else {
-      const u = inMemoryDb.users.get(email3);
-      targetUserId = u ? u.id : null;
-    }
-    await this.recordAuditLog(
-      targetUserId,
-      "PASSWORD_RESET_COMPLETED",
-      "user",
-      targetUserId,
-      { email: email3 },
-      ip,
-      userAgent
-    );
-    return {
-      message: "Your password has been successfully updated. You may now log in."
-    };
-  }
-  /**
-   * Internal / Admin-Only Direct Password Reset (CLI / Emergency Recovery)
-   * Strictly verifies that the target account exists and has role = 'admin'.
-   * Never exposes plaintext password or password hash in return values or audit logs.
-   */
-  static async resetAdminPasswordDirect(adminEmail, newPasswordPlaintext, actorIdentifier = "cli_admin_recovery") {
-    const emailNormalized = adminEmail.trim().toLowerCase();
-    if (!newPasswordPlaintext || newPasswordPlaintext.length < 8 || !/[A-Z]/.test(newPasswordPlaintext) || !/[a-z]/.test(newPasswordPlaintext) || !/[0-9]/.test(newPasswordPlaintext) || !/[^A-Za-z0-9]/.test(newPasswordPlaintext)) {
-      throw new Error(
-        "Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, one number, and one special character."
-      );
-    }
-    let adminUser = null;
-    if (getPool()) {
-      const rows = await query(
-        "SELECT id, email, role, status, first_name, last_name FROM users WHERE email = $1 AND role = 'admin'",
-        [emailNormalized]
-      );
-      adminUser = rows[0] || null;
-    } else {
-      const user = inMemoryDb.users.get(emailNormalized);
-      if (user && user.role === "admin") {
-        adminUser = user;
-      }
-    }
-    if (!adminUser) {
-      throw new Error(`Admin user with email "${emailNormalized}" not found or does not have role="admin".`);
-    }
-    const newPasswordHash = await bcryptjs_default.hash(newPasswordPlaintext, 10);
-    const now = /* @__PURE__ */ new Date();
-    if (getPool()) {
-      await query(
-        "UPDATE users SET password_hash = $1, updated_at = $2 WHERE id = $3 AND role = 'admin'",
-        [newPasswordHash, now, adminUser.id]
-      );
-    } else {
-      const user = inMemoryDb.users.get(emailNormalized);
-      if (user) {
-        user.password_hash = newPasswordHash;
-        user.updated_at = now;
-      }
-    }
-    if (getPool()) {
-      await query("UPDATE password_resets SET used_at = $1 WHERE email = $2 AND used_at IS NULL", [
-        now,
-        emailNormalized
-      ]);
-    } else {
-      for (const rec of inMemoryDb.passwordResets.values()) {
-        if (rec.email === emailNormalized && !rec.used_at) {
-          rec.used_at = now;
-        }
-      }
-    }
-    await this.recordAuditLog(
-      adminUser.id,
-      "ADMIN_PASSWORD_RESET_DIRECT",
-      "user",
-      adminUser.id,
-      {
-        email: emailNormalized,
-        action: "direct_admin_password_recovery",
-        actor: actorIdentifier
-      },
-      "127.0.0.1",
-      "CLI Recovery Utility"
-    );
-    return {
-      success: true,
-      userId: adminUser.id,
-      email: emailNormalized
-    };
-  }
-  /**
-   * Internal / Admin-Only list of admin accounts (CLI utility use only)
-   * Never exposes passwords, hashes, or sensitive tokens.
-   */
-  static async listAdminAccounts() {
-    if (getPool()) {
-      return await query(
-        "SELECT id, email, status, created_at FROM users WHERE role = 'admin' ORDER BY created_at ASC"
-      );
-    } else {
-      return Array.from(inMemoryDb.users.values()).filter((u) => u.role === "admin").map((u) => ({ id: u.id, email: u.email, status: u.status, created_at: u.created_at }));
-    }
-  }
-  /**
-   * Check if at least one administrator account exists in the system
-   */
-  static async hasAdmin() {
-    if (getPool()) {
-      const admins = await query("SELECT id FROM users WHERE role = 'admin' LIMIT 1");
-      return admins.length > 0;
-    } else {
-      const admins = Array.from(inMemoryDb.users.values()).filter((u) => u.role === "admin");
-      return admins.length > 0;
-    }
-  }
-  /**
-   * Explicit Initial Admin Setup
-   * Only allowed when zero admin accounts exist in the system (initial bootstrap).
-   * Enforces environment-variable-based setup secret (ADMIN_SETUP_SECRET) in production.
-   */
-  static async setupAdmin(input2, providedSecret, ip, userAgent) {
-    const configuredSecret = process.env.ADMIN_SETUP_SECRET;
-    const isProd = DatabaseGuard.isProduction();
-    if (isProd && (!configuredSecret || configuredSecret.trim() === "")) {
-      throw new Error(
-        "Public initial admin setup is disabled in production. Configure ADMIN_SETUP_SECRET in environment variables or use a secure CLI setup script."
-      );
-    }
-    if (configuredSecret && configuredSecret.trim() !== "") {
-      if (!providedSecret || providedSecret.trim() !== configuredSecret.trim()) {
-        throw new Error("Invalid or missing administrator setup secret");
-      }
-    }
-    const adminExists = await this.hasAdmin();
-    if (adminExists) {
-      throw new Error("An administrator account has already been initialized. Administrator setup is permanently closed.");
-    }
-    const emailNormalized = input2.email.toLowerCase();
-    const passwordHash = await bcryptjs_default.hash(input2.password, 10);
-    const adminId = crypto5.randomUUID();
-    const now = /* @__PURE__ */ new Date();
-    const newAdmin = {
-      id: adminId,
-      email: emailNormalized,
-      password_hash: passwordHash,
-      role: "admin",
-      status: "active",
-      first_name: input2.first_name || "System",
-      last_name: input2.last_name || "Administrator",
-      country: input2.country || "US",
-      phone: input2.phone || null,
-      preferred_currency: input2.preferred_currency || "USD",
-      email_verified_at: now,
-      created_at: now,
-      updated_at: now
-    };
-    if (getPool()) {
-      await query(
-        `INSERT INTO users (id, email, password_hash, role, status, first_name, last_name, country, phone, preferred_currency, email_verified_at, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-        [
-          newAdmin.id,
-          newAdmin.email,
-          newAdmin.password_hash,
-          newAdmin.role,
-          newAdmin.status,
-          newAdmin.first_name,
-          newAdmin.last_name,
-          newAdmin.country,
-          newAdmin.phone,
-          newAdmin.preferred_currency,
-          newAdmin.email_verified_at,
-          newAdmin.created_at,
-          newAdmin.updated_at
-        ]
-      );
-    } else {
-      inMemoryDb.users.set(emailNormalized, newAdmin);
-    }
-    const token = generateToken(newAdmin);
-    await this.recordAuditLog(
-      newAdmin.id,
-      "ADMIN_INITIALIZED",
-      "user",
-      newAdmin.id,
-      {
-        email: newAdmin.email,
-        role: newAdmin.role
-      },
-      ip,
-      userAgent
-    );
-    return {
-      token,
-      user: {
-        id: newAdmin.id,
-        email: newAdmin.email,
-        role: newAdmin.role,
-        status: newAdmin.status,
-        first_name: newAdmin.first_name,
-        last_name: newAdmin.last_name,
-        preferred_currency: newAdmin.preferred_currency
-      }
-    };
-  }
-  static {
-    // =========================================================================
-    // BROKER BACK OFFICE: OPERATIONS DASHBOARD & CLIENT INSPECTOR METHODS
-    // =========================================================================
-    this.defaultBrokerSettings = {
-      broker_name: "ForexCore Broker",
-      legal_entity_name: "ForexCore Financial Services Ltd",
-      support_email: "support@forexcore.com",
-      contact_phone: "+44 20 7946 0912",
-      default_currency: "USD",
-      default_leverage: "1:100",
-      max_leverage: "1:500",
-      accent_color: "#8b5cf6",
-      allowed_registrations: true,
-      kyc_required_for_withdrawals: true,
-      updated_at: (/* @__PURE__ */ new Date()).toISOString()
-    };
-  }
-  static async getBrokerSettings() {
-    const pool2 = getPool();
-    if (pool2) {
-      try {
-        const rows = await query(
-          `SELECT value, updated_at FROM system_settings WHERE key = 'broker_settings'`
-        );
-        if (rows.length > 0 && rows[0].value) {
-          return {
-            ...this.defaultBrokerSettings,
-            ...rows[0].value,
-            updated_at: rows[0].updated_at ? new Date(rows[0].updated_at).toISOString() : (/* @__PURE__ */ new Date()).toISOString()
-          };
-        }
-      } catch (err) {
-        console.warn("[BROKER_SETTINGS] Notice: Could not read persistent broker settings, using defaults:", err?.message || err);
-      }
-      return { ...this.defaultBrokerSettings };
-    } else {
-      const stored = inMemoryDb.systemSettings.get("broker_settings");
-      if (stored) {
-        return { ...this.defaultBrokerSettings, ...stored };
-      }
-      return { ...this.defaultBrokerSettings };
-    }
-  }
-  static async updateBrokerSettings(newSettings, adminUserId, ip, userAgent) {
-    const currentSettings = await this.getBrokerSettings();
-    const updatedSettings = {
-      ...currentSettings,
-      ...newSettings,
-      updated_at: (/* @__PURE__ */ new Date()).toISOString()
-    };
-    const pool2 = getPool();
-    if (pool2) {
-      await query(
-        `INSERT INTO system_settings (key, value, updated_at)
-         VALUES ('broker_settings', $1, NOW())
-         ON CONFLICT (key) DO UPDATE
-         SET value = EXCLUDED.value, updated_at = NOW()`,
-        [JSON.stringify(updatedSettings)]
-      );
-    } else {
-      inMemoryDb.systemSettings.set("broker_settings", updatedSettings);
-    }
-    await this.recordAuditLog(
-      adminUserId || null,
-      "BROKER_SETTINGS_UPDATED",
-      "system_config",
-      "broker_settings",
-      { updated_fields: Object.keys(newSettings) },
-      ip,
-      userAgent
-    );
-    return updatedSettings;
-  }
-  /**
-   * Retrieve aggregate real KPIs and top urgent attention queues for Broker Back Office
-   */
-  static async getDashboardKpis() {
-    const pool2 = getPool();
-    if (pool2) {
-      const countsResult = await query(
-        `SELECT
-           (SELECT COUNT(*)::int FROM users WHERE LOWER(role) = 'client') AS total_clients,
-           (SELECT COUNT(*)::int FROM users WHERE LOWER(role) = 'client' AND status = 'active') AS active_clients,
-           (SELECT COUNT(*)::int FROM kyc_profiles WHERE status IN ('pending', 'under_review')) AS pending_kyc,
-           (SELECT COUNT(*)::int FROM deposits WHERE status = 'pending') AS pending_deposits,
-           (SELECT COUNT(*)::int FROM withdrawals WHERE status = 'pending') AS pending_withdrawals,
-           (SELECT COUNT(*)::int FROM support_tickets WHERE status IN ('open', 'in_progress')) AS open_support_tickets,
-           (SELECT COUNT(*)::int FROM trading_accounts WHERE status = 'active') AS active_trading_accounts`
-      );
-      const row = countsResult[0] || {};
-      const urgentDeposits = await query(
-        `SELECT d.id, d.reference_no, d.amount, d.currency, d.created_at, d.payment_method_name,
-                u.first_name, u.last_name, u.email
-         FROM deposits d
-         JOIN users u ON u.id = d.user_id
-         WHERE d.status = 'pending'
-         ORDER BY d.created_at ASC LIMIT 5`
-      );
-      const urgentWithdrawals = await query(
-        `SELECT w.id, w.reference_no, w.amount, w.currency, w.created_at, w.payment_method_name,
-                u.first_name, u.last_name, u.email
-         FROM withdrawals w
-         JOIN users u ON u.id = w.user_id
-         WHERE w.status = 'pending'
-         ORDER BY w.created_at ASC LIMIT 5`
-      );
-      const urgentKyc = await query(
-        `SELECT kp.id, kp.user_id, kp.first_name, kp.last_name, kp.status, kp.submitted_at,
-                u.email, u.country
-         FROM kyc_profiles kp
-         JOIN users u ON u.id = kp.user_id
-         WHERE kp.status IN ('pending', 'under_review')
-         ORDER BY kp.submitted_at ASC LIMIT 5`
-      );
-      return {
-        kpis: {
-          total_clients: Number(row.total_clients) || 0,
-          active_clients: Number(row.active_clients) || 0,
-          pending_kyc: Number(row.pending_kyc) || 0,
-          pending_deposits: Number(row.pending_deposits) || 0,
-          pending_withdrawals: Number(row.pending_withdrawals) || 0,
-          open_support_tickets: Number(row.open_support_tickets) || 0,
-          active_trading_accounts: Number(row.active_trading_accounts) || 0
-        },
-        urgent: {
-          deposits: urgentDeposits,
-          withdrawals: urgentWithdrawals,
-          kyc: urgentKyc
-        }
-      };
-    } else {
-      const allClients = Array.from(inMemoryDb.users.values()).filter(
-        (u) => (u.role || "").toLowerCase() === "client"
-      );
-      const activeClients = allClients.filter((u) => u.status === "active");
-      const pendingKyc = Array.from(inMemoryDb.kycProfiles.values()).filter(
-        (kp) => kp.status === "pending" || kp.status === "under_review"
-      );
-      const pendingDeposits = Array.from(inMemoryDb.deposits.values()).filter((d5) => d5.status === "pending");
-      const pendingWithdrawals = Array.from(inMemoryDb.withdrawals.values()).filter((w) => w.status === "pending");
-      const openSupportTickets = Array.from(inMemoryDb.supportTickets.values()).filter(
-        (st) => st.status === "open" || st.status === "in_progress"
-      );
-      const activeTradingAccounts = Array.from(inMemoryDb.tradingAccounts.values()).filter(
-        (ta) => ta.status === "active"
-      );
-      const urgentDeposits = pendingDeposits.slice(0, 5).map((d5) => {
-        const u = Array.from(inMemoryDb.users.values()).find((usr) => usr.id === d5.user_id);
-        return {
-          id: d5.id,
-          reference_no: d5.reference_no,
-          amount: d5.amount,
-          currency: d5.currency,
-          created_at: d5.created_at,
-          payment_method_name: d5.payment_method_name,
-          first_name: u?.first_name || "Client",
-          last_name: u?.last_name || "",
-          email: u?.email || ""
-        };
-      });
-      const urgentWithdrawals = pendingWithdrawals.slice(0, 5).map((w) => {
-        const u = Array.from(inMemoryDb.users.values()).find((usr) => usr.id === w.user_id);
-        return {
-          id: w.id,
-          reference_no: w.reference_no,
-          amount: w.amount,
-          currency: w.currency,
-          created_at: w.created_at,
-          payment_method_name: w.payment_method_name,
-          first_name: u?.first_name || "Client",
-          last_name: u?.last_name || "",
-          email: u?.email || ""
-        };
-      });
-      const urgentKycList = pendingKyc.slice(0, 5).map((kp) => {
-        const u = Array.from(inMemoryDb.users.values()).find((usr) => usr.id === kp.user_id);
-        return {
-          id: kp.id,
-          user_id: kp.user_id,
-          first_name: kp.first_name,
-          last_name: kp.last_name,
-          status: kp.status,
-          submitted_at: kp.submitted_at,
-          email: u?.email || "",
-          country: kp.country || u?.country || ""
-        };
-      });
-      return {
-        kpis: {
-          total_clients: allClients.length,
-          active_clients: activeClients.length,
-          pending_kyc: pendingKyc.length,
-          pending_deposits: pendingDeposits.length,
-          pending_withdrawals: pendingWithdrawals.length,
-          open_support_tickets: openSupportTickets.length,
-          active_trading_accounts: activeTradingAccounts.length
-        },
-        urgent: {
-          deposits: urgentDeposits,
-          withdrawals: urgentWithdrawals,
-          kyc: urgentKycList
-        }
-      };
-    }
-  }
-  /**
-   * List all registered client users with their KYC status, primary wallet, and trading account totals
-   */
-  static async listClients(filter) {
-    const pool2 = getPool();
-    let clients = [];
-    if (pool2) {
-      const rows = await query(
-        `SELECT
-           u.id, u.email, u.first_name, u.last_name, u.country, u.phone,
-           u.preferred_currency, u.status, u.created_at, u.last_login_at,
-           kp.status AS kyc_status,
-           w.balance AS wallet_balance,
-           w.reserved_balance AS wallet_reserved_balance,
-           (SELECT COUNT(*)::int FROM trading_accounts ta WHERE ta.user_id = u.id) AS trading_accounts_count
-         FROM users u
-         LEFT JOIN kyc_profiles kp ON kp.user_id = u.id
-         LEFT JOIN wallets w ON w.user_id = u.id
-         WHERE LOWER(u.role) = 'client'
-         ORDER BY u.created_at DESC`
-      );
-      clients = rows.map((r5) => ({
-        id: r5.id,
-        email: r5.email,
-        first_name: r5.first_name,
-        last_name: r5.last_name,
-        country: r5.country,
-        phone: r5.phone || null,
-        preferred_currency: r5.preferred_currency,
-        status: r5.status,
-        kyc_status: r5.kyc_status || "unsubmitted",
-        wallet_balance: r5.wallet_balance || "0.00",
-        wallet_reserved_balance: r5.wallet_reserved_balance || "0.00",
-        trading_accounts_count: Number(r5.trading_accounts_count) || 0,
-        created_at: r5.created_at,
-        last_login_at: r5.last_login_at
-      }));
-    } else {
-      const usersList = Array.from(inMemoryDb.users.values()).filter(
-        (u) => (u.role || "").toLowerCase() === "client"
-      );
-      clients = usersList.map((c5) => {
-        const kyc = Array.from(inMemoryDb.kycProfiles.values()).find((kp) => kp.user_id === c5.id);
-        const wallet = Array.from(inMemoryDb.wallets.values()).find((w) => w.user_id === c5.id);
-        const accountCount = Array.from(inMemoryDb.tradingAccounts.values()).filter(
-          (ta) => ta.user_id === c5.id
-        ).length;
-        return {
-          id: c5.id,
-          email: c5.email,
-          first_name: c5.first_name,
-          last_name: c5.last_name,
-          country: c5.country,
-          phone: c5.phone || null,
-          preferred_currency: c5.preferred_currency,
-          status: c5.status,
-          kyc_status: kyc ? kyc.status : "unsubmitted",
-          wallet_balance: wallet ? wallet.balance : "0.00",
-          wallet_reserved_balance: wallet ? wallet.reserved_balance : "0.00",
-          trading_accounts_count: accountCount,
-          created_at: c5.created_at,
-          last_login_at: c5.last_login_at
-        };
-      });
-    }
-    if (filter) {
-      if (filter.search && filter.search.trim() !== "") {
-        const q3 = filter.search.trim().toLowerCase();
-        clients = clients.filter(
-          (c5) => c5.id.toLowerCase().includes(q3) || c5.email.toLowerCase().includes(q3) || c5.first_name.toLowerCase().includes(q3) || c5.last_name.toLowerCase().includes(q3)
-        );
-      }
-      if (filter.status && filter.status !== "all") {
-        clients = clients.filter((c5) => c5.status === filter.status);
-      }
-      if (filter.kycStatus && filter.kycStatus !== "all") {
-        clients = clients.filter((c5) => c5.kyc_status === filter.kycStatus);
-      }
-    }
-    return clients;
-  }
-  /**
-   * 360° Client Inspector Profile
-   * Comprehensive operational view combining identity, KYC, wallet, accounts, transactions, and tickets.
-   */
-  static async getClient360(clientId) {
-    const pool2 = getPool();
-    if (pool2) {
-      const userRows = await query(
-        `SELECT id, email, first_name, last_name, country, phone, preferred_currency, status, created_at, updated_at, last_login_at
-         FROM users WHERE id = $1 AND LOWER(role) = 'client'`,
-        [clientId]
-      );
-      if (userRows.length === 0) throw new Error("Client account not found");
-      const client = userRows[0];
-      const walletRows = await query(
-        `SELECT id, currency, balance, reserved_balance, created_at, updated_at FROM wallets WHERE user_id = $1`,
-        [clientId]
-      );
-      const wallet = walletRows[0] || {
-        id: null,
-        currency: client.preferred_currency,
-        balance: "0.00",
-        reserved_balance: "0.00"
-      };
-      const tradingAccountRows = await query(
-        `SELECT * FROM trading_accounts WHERE user_id = $1 ORDER BY created_at DESC`,
-        [clientId]
-      );
-      const tradingAccounts = tradingAccountRows.map((r5) => TradingAccountService.hydrateAccountRecord(r5));
-      const kycProfileRows = await query(
-        `SELECT * FROM kyc_profiles WHERE user_id = $1`,
-        [clientId]
-      );
-      const kycProfile = kycProfileRows[0] || null;
-      const kycDocs = await query(
-        `SELECT id, document_type, original_filename, file_size, mime_type, status, rejection_reason, created_at
-         FROM kyc_documents WHERE user_id = $1 ORDER BY created_at DESC`,
-        [clientId]
-      );
-      const deposits = await query(
-        `SELECT id, reference_no, amount, currency, status, payment_method_name, created_at, approved_at, rejected_at, rejection_reason
-         FROM deposits WHERE user_id = $1 ORDER BY created_at DESC LIMIT 10`,
-        [clientId]
-      );
-      const withdrawals = await query(
-        `SELECT id, reference_no, amount, currency, status, payment_method_name, created_at, approved_at, rejected_at, rejection_reason
-         FROM withdrawals WHERE user_id = $1 ORDER BY created_at DESC LIMIT 10`,
-        [clientId]
-      );
-      const supportTickets = await query(
-        `SELECT id, ticket_no, subject, category, priority, status, created_at, last_reply_at
-         FROM support_tickets WHERE user_id = $1 ORDER BY created_at DESC LIMIT 10`,
-        [clientId]
-      );
-      const auditLogs = await query(
-        `SELECT id, action, entity_type, entity_id, details, created_at
-         FROM audit_logs WHERE (entity_type = 'user' AND entity_id = $1) OR actor_id = $1::uuid
-         ORDER BY created_at DESC LIMIT 10`,
-        [clientId]
-      );
-      return {
-        client,
-        wallet,
-        trading_accounts: tradingAccounts,
-        kyc_profile: kycProfile,
-        kyc_documents: kycDocs,
-        recent_deposits: deposits,
-        recent_withdrawals: withdrawals,
-        support_tickets: supportTickets,
-        audit_logs: auditLogs
-      };
-    } else {
-      const client = Array.from(inMemoryDb.users.values()).find(
-        (u) => u.id === clientId && (u.role || "").toLowerCase() === "client"
-      );
-      if (!client) throw new Error("Client account not found");
-      const wallet = Array.from(inMemoryDb.wallets.values()).find((w) => w.user_id === clientId) || {
-        id: null,
-        currency: client.preferred_currency,
-        balance: "0.00",
-        reserved_balance: "0.00"
-      };
-      const tradingAccounts = Array.from(inMemoryDb.tradingAccounts.values()).filter((ta) => ta.user_id === clientId).map((ta) => TradingAccountService.hydrateAccountRecord(ta)).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime());
-      const kycProfile = Array.from(inMemoryDb.kycProfiles.values()).find((kp) => kp.user_id === clientId) || null;
-      const kycDocs = Array.from(inMemoryDb.kycDocuments.values()).filter((kd) => kd.user_id === clientId).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime());
-      const deposits = Array.from(inMemoryDb.deposits.values()).filter((d5) => d5.user_id === clientId).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime()).slice(0, 10);
-      const withdrawals = Array.from(inMemoryDb.withdrawals.values()).filter((w) => w.user_id === clientId).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime()).slice(0, 10);
-      const supportTickets = Array.from(inMemoryDb.supportTickets.values()).filter((st) => st.user_id === clientId).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime()).slice(0, 10);
-      const auditLogs = inMemoryDb.auditLogs.filter((al) => al.entity_type === "user" && al.entity_id === clientId || al.actor_id === clientId).slice(0, 10);
-      return {
-        client: {
-          id: client.id,
-          email: client.email,
-          first_name: client.first_name,
-          last_name: client.last_name,
-          country: client.country,
-          phone: client.phone || null,
-          preferred_currency: client.preferred_currency,
-          status: client.status,
-          created_at: client.created_at,
-          updated_at: client.updated_at,
-          last_login_at: client.last_login_at
-        },
-        wallet,
-        trading_accounts: tradingAccounts,
-        kyc_profile: kycProfile,
-        kyc_documents: kycDocs,
-        recent_deposits: deposits,
-        recent_withdrawals: withdrawals,
-        support_tickets: supportTickets,
-        audit_logs: auditLogs
-      };
-    }
-  }
-  /**
-   * Admin updates client status (active, suspended, pending) with mandatory audit logging and client notification
-   */
-  static async updateClientStatus(adminUserId, clientId, status, reason, ip, userAgent) {
-    const pool2 = getPool();
-    let previousStatus = "unknown";
-    if (pool2) {
-      const existing = await query("SELECT status FROM users WHERE id = $1 AND LOWER(role) = $2", [
-        clientId,
-        "client"
-      ]);
-      if (existing.length === 0) throw new Error("Client account not found");
-      previousStatus = existing[0].status;
-      await query("UPDATE users SET status = $1, updated_at = NOW() WHERE id = $2 AND LOWER(role) = $3", [
-        status,
-        clientId,
-        "client"
-      ]);
-    } else {
-      const u = Array.from(inMemoryDb.users.values()).find(
-        (usr) => usr.id === clientId && (usr.role || "").toLowerCase() === "client"
-      );
-      if (!u) throw new Error("Client account not found");
-      previousStatus = u.status;
-      u.status = status;
-      u.updated_at = /* @__PURE__ */ new Date();
-    }
-    await this.recordAuditLog(
-      adminUserId,
-      "CLIENT_STATUS_UPDATED",
-      "user",
-      clientId,
-      {
-        previous_status: previousStatus,
-        new_status: status,
-        reason: reason || "Administrative action"
-      },
-      ip,
-      userAgent
-    );
-    await NotificationService.createNotification(
-      clientId,
-      "Account Status Updated",
-      `Your account status has been updated to ${status.toUpperCase()}.${reason ? ` Reason: ${reason}` : ""}`,
-      "system",
-      { previous_status: previousStatus, new_status: status, reason }
-    );
-    return { success: true, clientId, status, previousStatus };
-  }
-  /**
-   * Admin-only client deletion / deactivation with comprehensive foreign-key inspection and financial retention.
-   *
-   * Pre-flight checks:
-   * 1. Authorization: caller must be admin, cannot delete own account.
-   * 2. Target must exist and must be a client (cannot delete staff admins).
-   * 3. Balance verification: client must NOT have active wallet balance > 0 or reserved_balance > 0.
-   * 4. Pending financial requests: must NOT have pending deposits, withdrawals, or account transfers.
-   * 5. Financial & audit retention decision:
-   *    - If client has ANY immutable ledger transactions, completed deposits/withdrawals, or transfers:
-   *      HARD deletion would destroy required financial ledger history. Instead, the safest account
-   *      deactivation lifecycle is applied: status set to 'suspended', all trading accounts archived,
-   *      and CLIENT_DEACTIVATED_RETAINED_FOR_AUDIT recorded.
-   *    - If client has ZERO financial history (fresh account / non-transacting):
-   *      Controlled transactional deletion order is executed, leaving NO orphan records:
-   *      notifications -> support_ticket_attachments -> support_ticket_messages -> support_tickets ->
-   *      kyc_documents -> kyc_profiles -> trading_password_resets -> trading_accounts ->
-   *      wallets -> password_resets -> audit_logs (actor_id nullified) -> users.
-   *      CLIENT_DELETED is recorded in audit logs.
-   */
-  static async deleteClient(adminUserId, clientId, options, ip, userAgent) {
-    if (adminUserId === clientId) {
-      const err = new Error("Administrators cannot delete their own profile");
-      err.statusCode = 400;
-      throw err;
-    }
-    const pool2 = getPool();
-    if (pool2) {
-      const userRows = await query(
-        `SELECT id, email, first_name, last_name, role, status FROM users WHERE id = $1`,
-        [clientId]
-      );
-      if (userRows.length === 0) {
-        const err = new Error("Client account not found");
-        err.statusCode = 404;
-        throw err;
-      }
-      const targetUser = userRows[0];
-      if (targetUser.role === "admin") {
-        const err = new Error("Cannot delete administrator accounts via client deletion workflow");
-        err.statusCode = 403;
-        throw err;
-      }
-      if (options?.confirmEmail && options.confirmEmail.trim().toLowerCase() !== targetUser.email.toLowerCase()) {
-        const err = new Error("Email confirmation does not match the client email address");
-        err.statusCode = 400;
-        throw err;
-      }
-      const walletRows = await query(
-        `SELECT balance, reserved_balance FROM wallets WHERE user_id = $1`,
-        [clientId]
-      );
-      for (const w of walletRows) {
-        const bal = parseFloat(w.balance || "0");
-        const resBal = parseFloat(w.reserved_balance || "0");
-        if (bal > 0 || resBal > 0) {
-          const err = new Error(`Cannot delete client with active wallet balance (${w.balance}). Balance must be settled or withdrawn first.`);
-          err.statusCode = 400;
-          throw err;
-        }
-      }
-      const pendingDeposits = await query(
-        `SELECT id FROM deposits WHERE user_id = $1 AND status = 'pending'`,
-        [clientId]
-      );
-      if (pendingDeposits.length > 0) {
-        const err = new Error("Cannot delete client with pending deposits. Please approve or reject pending deposits first.");
-        err.statusCode = 400;
-        throw err;
-      }
-      const pendingWithdrawals = await query(
-        `SELECT id FROM withdrawals WHERE user_id = $1 AND status = 'pending'`,
-        [clientId]
-      );
-      if (pendingWithdrawals.length > 0) {
-        const err = new Error("Cannot delete client with pending withdrawals. Please approve or reject pending withdrawals first.");
-        err.statusCode = 400;
-        throw err;
-      }
-      let pendingTransfers = [];
-      try {
-        pendingTransfers = await query(
-          `SELECT id FROM account_transfers WHERE user_id = $1 AND status = 'pending'`,
-          [clientId]
-        );
-      } catch (tableErr) {
-        if (tableErr?.code === "42P01" || tableErr?.message && tableErr.message.includes('relation "account_transfers" does not exist')) {
-          pendingTransfers = [];
-        } else {
-          throw tableErr;
-        }
-      }
-      if (pendingTransfers.length > 0) {
-        const err = new Error("Cannot delete client with pending account transfers. Please resolve transfers first.");
-        err.statusCode = 400;
-        throw err;
-      }
-      const txRows = await query(
-        `SELECT COUNT(*) as count FROM transactions WHERE user_id = $1`,
-        [clientId]
-      );
-      const txCount = parseInt(txRows[0]?.count || "0", 10);
-      const depRows = await query(
-        `SELECT COUNT(*) as count FROM deposits WHERE user_id = $1`,
-        [clientId]
-      );
-      const depCount = parseInt(depRows[0]?.count || "0", 10);
-      const wthRows = await query(
-        `SELECT COUNT(*) as count FROM withdrawals WHERE user_id = $1`,
-        [clientId]
-      );
-      const wthCount = parseInt(wthRows[0]?.count || "0", 10);
-      let trCount = 0;
-      try {
-        const trRows = await query(
-          `SELECT COUNT(*) as count FROM account_transfers WHERE user_id = $1`,
-          [clientId]
-        );
-        trCount = parseInt(trRows[0]?.count || "0", 10);
-      } catch (tableErr) {
-        if (tableErr?.code === "42P01" || tableErr?.message && tableErr.message.includes('relation "account_transfers" does not exist')) {
-          trCount = 0;
-        } else {
-          throw tableErr;
-        }
-      }
-      const hasFinancialHistory = txCount > 0 || depCount > 0 || wthCount > 0 || trCount > 0;
-      if (hasFinancialHistory) {
-        await query(
-          `UPDATE users SET status = 'suspended', updated_at = NOW() WHERE id = $1`,
-          [clientId]
-        );
-        await query(
-          `UPDATE trading_accounts SET status = 'archived', updated_at = NOW() WHERE user_id = $1`,
-          [clientId]
-        );
-        await this.recordAuditLog(
-          adminUserId,
-          "CLIENT_DEACTIVATED_RETAINED_FOR_AUDIT",
-          "user",
-          clientId,
-          {
-            target_client_id: clientId,
-            target_email: targetUser.email,
-            transactions_retained: txCount,
-            deposits_retained: depCount,
-            withdrawals_retained: wthCount,
-            transfers_retained: trCount,
-            reason: "Client deletion requested; deactivated and archived to preserve immutable financial and audit history."
-          },
-          ip,
-          userAgent
-        );
-        return {
-          success: true,
-          action: "deactivated",
-          message: "Client profile has been deactivated and trading accounts archived. Financial ledger and audit history have been retained for regulatory compliance.",
-          client_id: clientId
-        };
-      } else {
-        await query(`DELETE FROM notifications WHERE user_id = $1`, [clientId]);
-        await query(`DELETE FROM support_ticket_attachments WHERE user_id = $1`, [clientId]);
-        await query(`DELETE FROM support_ticket_messages WHERE sender_id = $1`, [clientId]);
-        await query(`DELETE FROM support_tickets WHERE user_id = $1`, [clientId]);
-        await query(`DELETE FROM kyc_documents WHERE user_id = $1`, [clientId]);
-        await query(`DELETE FROM kyc_profiles WHERE user_id = $1`, [clientId]);
-        try {
-          await query(`DELETE FROM trading_password_resets WHERE user_id = $1`, [clientId]);
-        } catch (tableErr) {
-          if (tableErr?.code !== "42P01" && !(tableErr?.message && tableErr.message.includes('relation "trading_password_resets" does not exist'))) {
-            throw tableErr;
-          }
-        }
-        await query(`DELETE FROM trading_accounts WHERE user_id = $1`, [clientId]);
-        try {
-          await query(`DELETE FROM account_transfers WHERE user_id = $1`, [clientId]);
-        } catch (tableErr) {
-          if (tableErr?.code !== "42P01" && !(tableErr?.message && tableErr.message.includes('relation "account_transfers" does not exist'))) {
-            throw tableErr;
-          }
-        }
-        await query(`DELETE FROM deposits WHERE user_id = $1`, [clientId]);
-        await query(`DELETE FROM withdrawals WHERE user_id = $1`, [clientId]);
-        await query(`DELETE FROM transactions WHERE user_id = $1`, [clientId]);
-        await query(`DELETE FROM wallets WHERE user_id = $1`, [clientId]);
-        await query(`DELETE FROM password_resets WHERE email = $1`, [targetUser.email]);
-        await query(`UPDATE audit_logs SET actor_id = NULL WHERE actor_id = $1`, [clientId]);
-        await query(`DELETE FROM users WHERE id = $1`, [clientId]);
-        await this.recordAuditLog(
-          adminUserId,
-          "CLIENT_DELETED",
-          "user",
-          clientId,
-          {
-            deleted_client_id: clientId,
-            deleted_client_email: targetUser.email,
-            reason: "Client deleted with no prior financial history."
-          },
-          ip,
-          userAgent
-        );
-        return {
-          success: true,
-          action: "deleted",
-          message: "Client profile and associated records deleted successfully.",
-          client_id: clientId
-        };
-      }
-    } else {
-      const targetUser = Array.from(inMemoryDb.users.values()).find((u) => u.id === clientId);
-      if (!targetUser) {
-        const err = new Error("Client account not found");
-        err.statusCode = 404;
-        throw err;
-      }
-      if (targetUser.role === "admin") {
-        const err = new Error("Cannot delete administrator accounts via client deletion workflow");
-        err.statusCode = 403;
-        throw err;
-      }
-      if (options?.confirmEmail && options.confirmEmail.trim().toLowerCase() !== targetUser.email.toLowerCase()) {
-        const err = new Error("Email confirmation does not match the client email address");
-        err.statusCode = 400;
-        throw err;
-      }
-      const clientWallets = Array.from(inMemoryDb.wallets.values()).filter((w) => w.user_id === clientId);
-      for (const w of clientWallets) {
-        const bal = parseFloat(w.balance || "0");
-        const resBal = parseFloat(w.reserved_balance || "0");
-        if (bal > 0 || resBal > 0) {
-          const err = new Error(`Cannot delete client with active wallet balance (${w.balance}). Balance must be settled or withdrawn first.`);
-          err.statusCode = 400;
-          throw err;
-        }
-      }
-      const pendingDeposits = Array.from(inMemoryDb.deposits.values()).filter((d5) => d5.user_id === clientId && d5.status === "pending");
-      if (pendingDeposits.length > 0) {
-        const err = new Error("Cannot delete client with pending deposits. Please approve or reject pending deposits first.");
-        err.statusCode = 400;
-        throw err;
-      }
-      const pendingWithdrawals = Array.from(inMemoryDb.withdrawals.values()).filter((w) => w.user_id === clientId && w.status === "pending");
-      if (pendingWithdrawals.length > 0) {
-        const err = new Error("Cannot delete client with pending withdrawals. Please approve or reject pending withdrawals first.");
-        err.statusCode = 400;
-        throw err;
-      }
-      const pendingTransfers = Array.from(inMemoryDb.accountTransfers.values()).filter((tr) => tr.user_id === clientId && tr.status === "pending");
-      if (pendingTransfers.length > 0) {
-        const err = new Error("Cannot delete client with pending account transfers. Please resolve transfers first.");
-        err.statusCode = 400;
-        throw err;
-      }
-      const txCount = inMemoryDb.transactions.filter((t) => t.user_id === clientId).length;
-      const depCount = Array.from(inMemoryDb.deposits.values()).filter((d5) => d5.user_id === clientId).length;
-      const wthCount = Array.from(inMemoryDb.withdrawals.values()).filter((w) => w.user_id === clientId).length;
-      const trCount = Array.from(inMemoryDb.accountTransfers.values()).filter((tr) => tr.user_id === clientId).length;
-      const hasFinancialHistory = txCount > 0 || depCount > 0 || wthCount > 0 || trCount > 0;
-      if (hasFinancialHistory) {
-        targetUser.status = "suspended";
-        targetUser.updated_at = /* @__PURE__ */ new Date();
-        for (const [id, acc] of inMemoryDb.tradingAccounts.entries()) {
-          if (acc.user_id === clientId) {
-            acc.status = "archived";
-            acc.updated_at = /* @__PURE__ */ new Date();
-          }
-        }
-        await this.recordAuditLog(
-          adminUserId,
-          "CLIENT_DEACTIVATED_RETAINED_FOR_AUDIT",
-          "user",
-          clientId,
-          {
-            target_client_id: clientId,
-            target_email: targetUser.email,
-            transactions_retained: txCount,
-            deposits_retained: depCount,
-            withdrawals_retained: wthCount,
-            transfers_retained: trCount,
-            reason: "Client deletion requested; deactivated and archived to preserve immutable financial and audit history."
-          },
-          ip,
-          userAgent
-        );
-        return {
-          success: true,
-          action: "deactivated",
-          message: "Client profile has been deactivated and trading accounts archived. Financial ledger and audit history have been retained for regulatory compliance.",
-          client_id: clientId
-        };
-      } else {
-        inMemoryDb.notifications = inMemoryDb.notifications.filter((n3) => n3.user_id !== clientId);
-        inMemoryDb.supportAttachments = inMemoryDb.supportAttachments.filter((a5) => a5.user_id !== clientId);
-        inMemoryDb.supportMessages = inMemoryDb.supportMessages.filter((m3) => m3.sender_id !== clientId);
-        for (const [id, t] of inMemoryDb.supportTickets.entries()) {
-          if (t.user_id === clientId) inMemoryDb.supportTickets.delete(id);
-        }
-        for (const [id, d5] of inMemoryDb.kycDocuments.entries()) {
-          if (d5.user_id === clientId) inMemoryDb.kycDocuments.delete(id);
-        }
-        for (const [id, p3] of inMemoryDb.kycProfiles.entries()) {
-          if (p3.user_id === clientId) inMemoryDb.kycProfiles.delete(id);
-        }
-        for (const [id, r5] of inMemoryDb.tradingPasswordResets.entries()) {
-          if (r5.user_id === clientId) inMemoryDb.tradingPasswordResets.delete(id);
-        }
-        for (const [id, acc] of inMemoryDb.tradingAccounts.entries()) {
-          if (acc.user_id === clientId) inMemoryDb.tradingAccounts.delete(id);
-        }
-        for (const [id, tr] of inMemoryDb.accountTransfers.entries()) {
-          if (tr.user_id === clientId) inMemoryDb.accountTransfers.delete(id);
-        }
-        for (const [id, d5] of inMemoryDb.deposits.entries()) {
-          if (d5.user_id === clientId) inMemoryDb.deposits.delete(id);
-        }
-        for (const [id, w] of inMemoryDb.withdrawals.entries()) {
-          if (w.user_id === clientId) inMemoryDb.withdrawals.delete(id);
-        }
-        inMemoryDb.transactions = inMemoryDb.transactions.filter((t) => t.user_id !== clientId);
-        for (const [k5, w] of inMemoryDb.wallets.entries()) {
-          if (w.user_id === clientId) inMemoryDb.wallets.delete(k5);
-        }
-        for (const [tok, pr] of inMemoryDb.passwordResets.entries()) {
-          if (pr.email === targetUser.email) inMemoryDb.passwordResets.delete(tok);
-        }
-        for (const al of inMemoryDb.auditLogs) {
-          if (al.actor_id === clientId) al.actor_id = null;
-        }
-        inMemoryDb.users.delete(targetUser.email.toLowerCase());
-        inMemoryDb.users.delete(clientId);
-        await this.recordAuditLog(
-          adminUserId,
-          "CLIENT_DELETED",
-          "user",
-          clientId,
-          {
-            deleted_client_id: clientId,
-            deleted_client_email: targetUser.email,
-            reason: "Client deleted with no prior financial history."
-          },
-          ip,
-          userAgent
-        );
-        return {
-          success: true,
-          action: "deleted",
-          message: "Client profile and associated records deleted successfully.",
-          client_id: clientId
-        };
-      }
-    }
-  }
-  /**
-   * Broadcast notification to all clients or send to a specific client
-   */
-  static async broadcastNotification(adminUserId, input2, ip, userAgent) {
-    const title = input2.title?.trim();
-    const message = input2.message?.trim();
-    if (!title || !message) throw new Error("Title and message are required");
-    let dispatchCount = 0;
-    const notificationType = input2.type || "system";
-    if (input2.target === "specific_user") {
-      if (!input2.user_id) throw new Error("user_id is required for specific user target");
-      await NotificationService.createNotification(
-        input2.user_id,
-        title,
-        message,
-        notificationType,
-        { broadcast_by: adminUserId }
-      );
-      dispatchCount = 1;
-    } else {
-      const clients = await this.listClients();
-      for (const client of clients) {
-        await NotificationService.createNotification(
-          client.id,
-          title,
-          message,
-          notificationType,
-          { broadcast_by: adminUserId }
-        );
-        dispatchCount++;
-      }
-    }
-    await this.recordAuditLog(
-      adminUserId,
-      "NOTIFICATION_BROADCAST_SENT",
-      "notification",
-      null,
-      {
-        title,
-        target: input2.target,
-        user_id: input2.user_id || null,
-        dispatch_count: dispatchCount
-      },
-      ip,
-      userAgent
-    );
-    return { success: true, dispatch_count: dispatchCount };
-  }
-  /**
-   * =========================================================================
-   * STAFF ADMINISTRATOR MANAGEMENT (Strict 2-Tier: client, admin)
-   * =========================================================================
-   */
-  /**
-   * List all staff administrators
-   */
-  static async listStaffAdmins() {
-    const pool2 = getPool();
-    if (pool2) {
-      const rows = await query(
-        `SELECT id, email, first_name, last_name, role, status, created_at, updated_at, last_login_at
-         FROM users
-         WHERE LOWER(role) = 'admin'
-         ORDER BY created_at ASC`
-      );
-      return rows.map((r5) => ({
-        id: r5.id,
-        email: r5.email,
-        first_name: r5.first_name,
-        last_name: r5.last_name,
-        role: "admin",
-        status: r5.status,
-        created_at: r5.created_at,
-        updated_at: r5.updated_at,
-        last_login_at: r5.last_login_at
-      }));
-    } else {
-      const admins = Array.from(inMemoryDb.users.values()).filter(
-        (u) => (u.role || "").toLowerCase() === "admin"
-      );
-      return admins.map((a5) => ({
-        id: a5.id,
-        email: a5.email,
-        first_name: a5.first_name,
-        last_name: a5.last_name,
-        role: "admin",
-        status: a5.status,
-        created_at: a5.created_at,
-        updated_at: a5.updated_at,
-        last_login_at: a5.last_login_at
-      }));
-    }
-  }
-  /**
-   * Provision a new staff administrator by an authenticated admin
-   */
-  static async createStaffAdmin(actorAdminId, payload, ip, userAgent) {
-    const emailNormalized = payload.email.trim().toLowerCase();
-    if (!emailNormalized || !payload.password) {
-      throw new Error("Email and password are required");
-    }
-    if (payload.password.length < 8) {
-      throw new Error("Password must be at least 8 characters long");
-    }
-    const pool2 = getPool();
-    if (pool2) {
-      const existing = await query("SELECT id FROM users WHERE email = $1", [emailNormalized]);
-      if (existing.length > 0) {
-        throw new Error("A user with this email already exists");
-      }
-    } else {
-      const existing = Array.from(inMemoryDb.users.values()).some(
-        (u) => u.email.toLowerCase() === emailNormalized
-      );
-      if (existing) {
-        throw new Error("A user with this email already exists");
-      }
-    }
-    const salt = await bcryptjs_default.genSalt(10);
-    const passwordHash = await bcryptjs_default.hash(payload.password, salt);
-    const newAdminId = crypto5.randomUUID();
-    const now = /* @__PURE__ */ new Date();
-    if (pool2) {
-      await query(
-        `INSERT INTO users (
-          id, email, password_hash, role, status, first_name, last_name, country, preferred_currency, email_verified_at, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-        [
-          newAdminId,
-          emailNormalized,
-          passwordHash,
-          "admin",
-          "active",
-          payload.first_name || "Staff",
-          payload.last_name || "Admin",
-          "US",
-          "USD",
-          now,
-          now,
-          now
-        ]
-      );
-    } else {
-      const newAdmin = {
-        id: newAdminId,
-        email: emailNormalized,
-        password_hash: passwordHash,
-        role: "admin",
-        status: "active",
-        first_name: payload.first_name || "Staff",
-        last_name: payload.last_name || "Admin",
-        country: "US",
-        preferred_currency: "USD",
-        email_verified_at: now,
-        created_at: now,
-        updated_at: now
-      };
-      inMemoryDb.users.set(newAdminId, newAdmin);
-    }
-    await this.recordAuditLog(
-      actorAdminId,
-      "STAFF_ADMIN_PROVISIONED",
-      "user",
-      newAdminId,
-      {
-        email: emailNormalized,
-        first_name: payload.first_name,
-        last_name: payload.last_name,
-        provisioned_by: actorAdminId
-      },
-      ip,
-      userAgent
-    );
-    return {
-      id: newAdminId,
-      email: emailNormalized,
-      first_name: payload.first_name,
-      last_name: payload.last_name,
-      role: "admin",
-      status: "active",
-      created_at: now
-    };
-  }
-  /**
-   * Activate or deactivate staff admin status
-   */
-  static async setStaffAdminStatus(actorAdminId, targetAdminId, status, reason, ip, userAgent) {
-    if (actorAdminId === targetAdminId && status === "suspended") {
-      throw new Error("Administrators cannot deactivate their own account.");
-    }
-    const pool2 = getPool();
-    let prevStatus = "unknown";
-    if (pool2) {
-      const rows = await query(
-        `SELECT id, email, status FROM users WHERE id = $1 AND LOWER(role) = 'admin'`,
-        [targetAdminId]
-      );
-      if (rows.length === 0) {
-        throw new Error("Staff administrator account not found");
-      }
-      prevStatus = rows[0].status;
-      if (status === "suspended") {
-        const activeCountRows = await query(
-          `SELECT COUNT(*)::int as count FROM users WHERE LOWER(role) = 'admin' AND status = 'active'`
-        );
-        const count = activeCountRows[0]?.count || 0;
-        if (count <= 1 && prevStatus === "active") {
-          throw new Error("Cannot deactivate the sole remaining active administrator");
-        }
-      }
-      await query(`UPDATE users SET status = $1, updated_at = NOW() WHERE id = $2 AND LOWER(role) = 'admin'`, [
-        status,
-        targetAdminId
-      ]);
-    } else {
-      const target = Array.from(inMemoryDb.users.values()).find(
-        (u) => u.id === targetAdminId && (u.role || "").toLowerCase() === "admin"
-      );
-      if (!target) {
-        throw new Error("Staff administrator account not found");
-      }
-      prevStatus = target.status;
-      if (status === "suspended") {
-        const activeCount = Array.from(inMemoryDb.users.values()).filter(
-          (u) => (u.role || "").toLowerCase() === "admin" && u.status === "active"
-        ).length;
-        if (activeCount <= 1 && prevStatus === "active") {
-          throw new Error("Cannot deactivate the sole remaining active administrator");
-        }
-      }
-      target.status = status;
-      target.updated_at = /* @__PURE__ */ new Date();
-    }
-    await this.recordAuditLog(
-      actorAdminId,
-      status === "suspended" ? "STAFF_ADMIN_DEACTIVATED" : "STAFF_ADMIN_ACTIVATED",
-      "user",
-      targetAdminId,
-      {
-        previous_status: prevStatus,
-        new_status: status,
-        reason: reason || "Administrative governance decision",
-        performed_by: actorAdminId
-      },
-      ip,
-      userAgent
-    );
-    return {
-      success: true,
-      targetAdminId,
-      status,
-      previousStatus: prevStatus
-    };
-  }
-};
-
-// netlify/functions/services/financial.service.ts
-import crypto11 from "crypto";
+import crypto9 from "crypto";
 
 // netlify/functions/services/trading-engine-bridge.service.ts
-import crypto10 from "crypto";
+import crypto8 from "crypto";
 
 // src/trading-engine/types.ts
 var TradingEngineError = class extends Error {
@@ -74489,7 +71159,7 @@ var TradingEngineError = class extends Error {
 };
 
 // src/trading-engine/middleware/auth.ts
-import crypto6 from "crypto";
+import crypto4 from "crypto";
 var TIMESTAMP_TOLERANCE_MS = 60 * 1e3;
 var seenNonces = /* @__PURE__ */ new Map();
 setInterval(() => {
@@ -74576,10 +71246,10 @@ function verifyCrmM2MRequest(req, res, next) {
       timestamp: now
     });
   }
-  const expectedHmac = crypto6.createHmac("sha256", secret).update(canonicalPayload).digest("hex");
+  const expectedHmac = crypto4.createHmac("sha256", secret).update(canonicalPayload).digest("hex");
   const expectedBuf = Buffer.from(expectedHmac, "hex");
   const actualBuf = Buffer.from(signatureHex, "hex");
-  if (expectedBuf.length !== actualBuf.length || !crypto6.timingSafeEqual(expectedBuf, actualBuf)) {
+  if (expectedBuf.length !== actualBuf.length || !crypto4.timingSafeEqual(expectedBuf, actualBuf)) {
     return res.status(403).json({
       status: "error",
       code: "INVALID_SIGNATURE",
@@ -74592,13 +71262,13 @@ function verifyCrmM2MRequest(req, res, next) {
 }
 
 // src/trading-engine/services/idempotency.service.ts
-import crypto7 from "crypto";
+import crypto5 from "crypto";
 var pgPool = null;
 var memoryIdempotencyStore = /* @__PURE__ */ new Map();
 var IdempotencyService = class {
   static hashPayload(payload) {
     const serialized = typeof payload === "string" ? payload : JSON.stringify(payload || {});
-    return crypto7.createHash("sha256").update(serialized).digest("hex");
+    return crypto5.createHash("sha256").update(serialized).digest("hex");
   }
   static async executeIdempotent(idempotencyKey, action, requestPayload, fn) {
     if (!idempotencyKey || typeof idempotencyKey !== "string" || idempotencyKey.trim().length === 0) {
@@ -74649,7 +71319,7 @@ var IdempotencyService = class {
     const now = /* @__PURE__ */ new Date();
     const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1e3);
     const record2 = {
-      id: crypto7.randomUUID(),
+      id: crypto5.randomUUID(),
       idempotency_key: trimmedKey,
       action,
       request_hash: reqHash,
@@ -74679,7 +71349,7 @@ var IdempotencyService = class {
 };
 
 // src/trading-engine/services/audit.service.ts
-import crypto8 from "crypto";
+import crypto6 from "crypto";
 var pgPool2 = null;
 var memoryAuditLogs = [];
 var AuditService = class {
@@ -74688,7 +71358,7 @@ var AuditService = class {
     const sanitizedPrev = entry.previousState ? this.sanitize(entry.previousState) : void 0;
     const sanitizedNew = entry.newState ? this.sanitize(entry.newState) : void 0;
     const logRecord = {
-      id: crypto8.randomUUID(),
+      id: crypto6.randomUUID(),
       admin_user_id: entry.adminUserId || "crm_system_m2m",
       action: entry.action,
       target_account_id: entry.targetAccountId,
@@ -76930,7 +73600,7 @@ PI = new Decimal(PI);
 var decimal_default = Decimal;
 
 // src/trading-engine/services/runtime.service.ts
-import crypto9 from "crypto";
+import crypto7 from "crypto";
 var TradingRuntimeService = class {
   static {
     this.accounts = /* @__PURE__ */ new Map();
@@ -77142,7 +73812,7 @@ var TradingRuntimeService = class {
         const newBalance = Number(new decimal_default(prevBalance).plus(params.amount).toFixed(2));
         account.balance = newBalance;
         this.recalculateRisk(account);
-        const executionId = `exec_c_${crypto9.randomUUID().slice(0, 8)}`;
+        const executionId = `exec_c_${crypto7.randomUUID().slice(0, 8)}`;
         const executedAt = Date.now();
         await AuditService.log({
           adminUserId: params.adminUserId || "crm_system_m2m",
@@ -77206,7 +73876,7 @@ var TradingRuntimeService = class {
         }
         account.balance = newBalance;
         this.recalculateRisk(account);
-        const executionId = `exec_d_${crypto9.randomUUID().slice(0, 8)}`;
+        const executionId = `exec_d_${crypto7.randomUUID().slice(0, 8)}`;
         const executedAt = Date.now();
         await AuditService.log({
           adminUserId: params.adminUserId || "crm_system_m2m",
@@ -77316,7 +73986,7 @@ var TradingRuntimeService = class {
     account.balance = Number(new decimal_default(account.balance).plus(realizedPnL).toFixed(2));
     this.recalculateRisk(account);
     const execution = {
-      id: `exec_cls_${crypto9.randomUUID().slice(0, 8)}`,
+      id: `exec_cls_${crypto7.randomUUID().slice(0, 8)}`,
       positionId: position.id,
       accountId: account.id,
       tenantId: account.tenantId,
@@ -77368,7 +74038,7 @@ var TradingRuntimeService = class {
       pos.unrealizedPnL = 0;
       pos.marginLocked = 0;
       const exec = {
-        id: `exec_cls_${crypto9.randomUUID().slice(0, 8)}`,
+        id: `exec_cls_${crypto7.randomUUID().slice(0, 8)}`,
         positionId: pos.id,
         accountId: account.id,
         tenantId: account.tenantId,
@@ -77797,21 +74467,32 @@ var TradingEngineBridgeError = class extends Error {
 };
 var TradingEngineBridgeService = class {
   static getSecret() {
-    const secret = process.env.CRM_M2M_SECRET || process.env.CRM_LAUNCH_SECRET || "test_only_crm_m2m_secret_at_least_32_characters_long_for_test!";
-    return secret;
+    const secret = process.env.CRM_M2M_SECRET || process.env.CRM_LAUNCH_SECRET;
+    if (!secret || secret.trim().length < 32) {
+      if (process.env.NODE_ENV === "test" || process.env.CRM_TEST_MODE === "true") {
+        return "test_only_crm_m2m_secret_at_least_32_characters_long_for_test!";
+      }
+    }
+    return secret || "test_only_crm_m2m_secret_at_least_32_characters_long_for_test!";
   }
   static getBaseUrl() {
     return process.env.TRADING_ENGINE_URL || "https://trading-platform-3a5e.onrender.com";
   }
+  /**
+   * Generates Base64 HMAC-SHA256 signature matching Trading Platform M2M contract:
+   * Base64(HMAC-SHA256(`${timestamp}.${rawRequestBody}`, CRM_M2M_SECRET))
+   */
+  static generateM2MSignature(secret, timestamp, rawRequestBody) {
+    return crypto8.createHmac("sha256", secret).update(`${timestamp}.${rawRequestBody}`).digest("base64");
+  }
   static generateSignature(timestamp, body) {
     const secret = this.getSecret();
+    const tsStr = timestamp.toString();
     let bodyStr = "";
     if (body !== void 0 && body !== null) {
       bodyStr = typeof body === "string" ? body : JSON.stringify(body);
     }
-    const payload = `${timestamp}.${bodyStr}`;
-    const hmac = crypto10.createHmac("sha256", secret).update(payload).digest("hex");
-    return `t=${timestamp},v1=${hmac}`;
+    return this.generateM2MSignature(secret, tsStr, bodyStr);
   }
   static resolveLocalAccountId(accountId, accountNumber, currency = "USD", initialBalance = 0, tenantId = "default") {
     if (TradingRuntimeService.getAccount(accountId)) {
@@ -77848,7 +74529,7 @@ var TradingEngineBridgeService = class {
    */
   static async creditTradingAccount(input2) {
     const baseUrl = this.getBaseUrl();
-    const useLocalEngine = process.env.CRM_USE_LOCAL_ENGINE === "true" || baseUrl === "local" || baseUrl.includes("127.0.0.1") || baseUrl.includes("localhost");
+    const useLocalEngine = process.env.CRM_USE_LOCAL_ENGINE === "true" || baseUrl === "local";
     if (useLocalEngine) {
       const targetId = this.resolveLocalAccountId(
         input2.accountId,
@@ -77869,37 +74550,45 @@ var TradingEngineBridgeService = class {
       });
       return res.body;
     }
-    const timestamp = Date.now();
+    const timestamp = Date.now().toString();
     const payload = {
       accountId: input2.accountId,
-      accountNumber: input2.accountNumber,
       amount: input2.amount,
-      currency: input2.currency,
-      referenceNo: input2.referenceNo,
-      tenantId: input2.tenantId,
-      adminUserId: input2.adminUserId
+      currency: input2.currency || "USD",
+      transactionId: input2.transactionId || input2.referenceNo,
+      idempotencyKey: input2.idempotencyKey || input2.referenceNo,
+      note: input2.note || `CRM Transfer ${input2.referenceNo}`
     };
-    const signature = this.generateSignature(timestamp, payload);
+    const rawBody = JSON.stringify(payload);
+    const signature = this.generateM2MSignature(this.getSecret(), timestamp, rawBody);
     try {
       const res = await fetch(`${baseUrl}/api/v1/admin/trading/funding/credit`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "X-CRM-Timestamp": timestamp,
           "X-CRM-Signature": signature,
-          "Idempotency-Key": input2.idempotencyKey
+          "Idempotency-Key": input2.idempotencyKey || input2.referenceNo
         },
-        body: JSON.stringify(payload)
+        body: rawBody
       });
-      const data = await res.json().catch(() => ({}));
+      const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new TradingEngineBridgeError(
-          data.code || "ENGINE_CREDIT_FAILED",
-          data.message || `Trading Engine credit failed with HTTP ${res.status}`,
+          resData.code || resData.error || "ENGINE_CREDIT_FAILED",
+          resData.message || `Trading Engine credit failed with HTTP ${res.status}`,
           res.status,
-          data.details
+          resData.details
         );
       }
-      return data;
+      const result = resData.data || resData;
+      return {
+        executionId: result.executionId || result.transactionId || result.id || input2.referenceNo,
+        accountId: result.accountId || input2.accountId,
+        previousBalance: result.previousBalance !== void 0 ? Number(result.previousBalance) : 0,
+        newBalance: result.newBalance !== void 0 ? Number(result.newBalance) : Number(input2.amount),
+        executedAt: result.executedAt ? Number(result.executedAt) : Date.now()
+      };
     } catch (err) {
       if (err instanceof TradingEngineBridgeError) throw err;
       if (process.env.NODE_ENV === "test" || process.env.CRM_TEST_MODE === "true") {
@@ -77934,7 +74623,7 @@ var TradingEngineBridgeService = class {
    */
   static async debitTradingAccount(input2) {
     const baseUrl = this.getBaseUrl();
-    const useLocalEngine = process.env.CRM_USE_LOCAL_ENGINE === "true" || baseUrl === "local" || baseUrl.includes("127.0.0.1") || baseUrl.includes("localhost");
+    const useLocalEngine = process.env.CRM_USE_LOCAL_ENGINE === "true" || baseUrl === "local";
     if (useLocalEngine) {
       const targetId = this.resolveLocalAccountId(
         input2.accountId,
@@ -77955,37 +74644,45 @@ var TradingEngineBridgeService = class {
       });
       return res.body;
     }
-    const timestamp = Date.now();
+    const timestamp = Date.now().toString();
     const payload = {
       accountId: input2.accountId,
-      accountNumber: input2.accountNumber,
       amount: input2.amount,
-      currency: input2.currency,
-      referenceNo: input2.referenceNo,
-      tenantId: input2.tenantId,
-      adminUserId: input2.adminUserId
+      currency: input2.currency || "USD",
+      transactionId: input2.transactionId || input2.referenceNo,
+      idempotencyKey: input2.idempotencyKey || input2.referenceNo,
+      note: input2.note || `CRM Transfer ${input2.referenceNo}`
     };
-    const signature = this.generateSignature(timestamp, payload);
+    const rawBody = JSON.stringify(payload);
+    const signature = this.generateM2MSignature(this.getSecret(), timestamp, rawBody);
     try {
       const res = await fetch(`${baseUrl}/api/v1/admin/trading/funding/debit`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "X-CRM-Timestamp": timestamp,
           "X-CRM-Signature": signature,
-          "Idempotency-Key": input2.idempotencyKey
+          "Idempotency-Key": input2.idempotencyKey || input2.referenceNo
         },
-        body: JSON.stringify(payload)
+        body: rawBody
       });
-      const data = await res.json().catch(() => ({}));
+      const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new TradingEngineBridgeError(
-          data.code || "ENGINE_DEBIT_FAILED",
-          data.message || `Trading Engine debit failed with HTTP ${res.status}`,
+          resData.code || resData.error || "ENGINE_DEBIT_FAILED",
+          resData.message || `Trading Engine debit failed with HTTP ${res.status}`,
           res.status,
-          data.details
+          resData.details
         );
       }
-      return data;
+      const result = resData.data || resData;
+      return {
+        executionId: result.executionId || result.transactionId || result.id || input2.referenceNo,
+        accountId: result.accountId || input2.accountId,
+        previousBalance: result.previousBalance !== void 0 ? Number(result.previousBalance) : 0,
+        newBalance: result.newBalance !== void 0 ? Number(result.newBalance) : 0,
+        executedAt: result.executedAt ? Number(result.executedAt) : Date.now()
+      };
     } catch (err) {
       if (err instanceof TradingEngineBridgeError) throw err;
       if (process.env.NODE_ENV === "test" || process.env.CRM_TEST_MODE === "true") {
@@ -78023,12 +74720,13 @@ var TradingEngineBridgeService = class {
     if (process.env.CRM_USE_LOCAL_ENGINE === "true" || baseUrl === "local") {
       return await TradingRuntimeService.getAccountRuntimeState(accountId, tenantId);
     }
-    const timestamp = Date.now();
-    const signature = this.generateSignature(timestamp);
+    const timestamp = Date.now().toString();
+    const signature = this.generateM2MSignature(this.getSecret(), timestamp, "");
     const tenantQuery = tenantId ? `?tenantId=${encodeURIComponent(tenantId)}` : "";
     try {
       const res = await fetch(`${baseUrl}/api/v1/admin/trading/accounts/${accountId}${tenantQuery}`, {
         headers: {
+          "X-CRM-Timestamp": timestamp,
           "X-CRM-Signature": signature
         }
       });
@@ -78053,12 +74751,13 @@ var TradingEngineBridgeService = class {
     if (process.env.CRM_USE_LOCAL_ENGINE === "true" || baseUrl === "local") {
       return await TradingRuntimeService.getAccountRisk(accountId, tenantId);
     }
-    const timestamp = Date.now();
-    const signature = this.generateSignature(timestamp);
+    const timestamp = Date.now().toString();
+    const signature = this.generateM2MSignature(this.getSecret(), timestamp, "");
     const tenantQuery = tenantId ? `?tenantId=${encodeURIComponent(tenantId)}` : "";
     try {
       const res = await fetch(`${baseUrl}/api/v1/admin/trading/accounts/${accountId}/risk${tenantQuery}`, {
         headers: {
+          "X-CRM-Timestamp": timestamp,
           "X-CRM-Signature": signature
         }
       });
@@ -78076,6 +74775,199 @@ var TradingEngineBridgeService = class {
     }
   }
   /**
+   * Dispatches trading account provisioning to Trading Platform engine.
+   */
+  static async provisionTradingAccount(input2) {
+    const baseUrl = this.getBaseUrl();
+    const useLocalEngine = process.env.CRM_USE_LOCAL_ENGINE === "true" || baseUrl === "local";
+    if (useLocalEngine || process.env.NODE_ENV === "test" || process.env.CRM_TEST_MODE === "true") {
+      const initialBal = input2.initialBalance || (input2.isDemo ? 1e4 : 0);
+      TradingRuntimeService.upsertAccount({
+        id: input2.accountId,
+        accountNumber: input2.accountNumber,
+        currency: input2.currency || "USD",
+        balance: initialBal,
+        equity: initialBal,
+        usedMargin: 0,
+        freeMargin: initialBal,
+        marginLevel: 0,
+        marginCallLevel: 100,
+        stopOutLevel: 50,
+        status: input2.status?.toUpperCase() || "ACTIVE",
+        tradingEnabled: input2.tradingEnabled !== void 0 ? input2.tradingEnabled : true,
+        sessionMode: input2.isDemo ? "DEMO" : "LIVE",
+        platform: "MT5",
+        tenantId: input2.tenantId || "default",
+        accountType: input2.accountType || "standard",
+        leverage: input2.leverage || 100,
+        activeSessionCount: 0
+      });
+      return {
+        status: "success",
+        accountId: input2.accountId,
+        accountNumber: input2.accountNumber,
+        remoteCreated: true
+      };
+    }
+    const timestamp = Date.now().toString();
+    const payload = {
+      accountId: input2.accountId,
+      accountNumber: input2.accountNumber,
+      currency: input2.currency || "USD",
+      leverage: input2.leverage || 100,
+      accountType: input2.accountType || "standard",
+      isDemo: input2.isDemo || false,
+      initialBalance: input2.initialBalance || 0,
+      serverName: input2.serverName || "Default-Server",
+      tradingEnabled: input2.tradingEnabled !== false,
+      status: input2.status || "ACTIVE",
+      tenantId: input2.tenantId || "default"
+    };
+    const rawBody = JSON.stringify(payload);
+    const signature = this.generateM2MSignature(this.getSecret(), timestamp, rawBody);
+    try {
+      const res = await fetch(`${baseUrl}/api/admin/trading/accounts`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CRM-Timestamp": timestamp,
+          "X-CRM-Signature": signature,
+          "Idempotency-Key": input2.idempotencyKey || `prov-${input2.accountId}`
+        },
+        body: rawBody
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new TradingEngineBridgeError(
+          data.code || "PROVISIONING_FAILED",
+          data.message || `Remote provisioning failed with HTTP ${res.status}`,
+          res.status,
+          data.details
+        );
+      }
+      return {
+        status: "success",
+        accountId: input2.accountId,
+        accountNumber: input2.accountNumber,
+        remoteCreated: true
+      };
+    } catch (err) {
+      if (err instanceof TradingEngineBridgeError) throw err;
+      throw new TradingEngineBridgeError(
+        "ENGINE_NETWORK_ERROR",
+        `Network error provisioning trading account on Trading Engine: ${err.message}`,
+        502
+      );
+    }
+  }
+  /**
+   * Updates trading account status and trading permissions on Trading Engine.
+   */
+  static async updateAccountStatus(input2) {
+    const baseUrl = this.getBaseUrl();
+    const useLocalEngine = process.env.CRM_USE_LOCAL_ENGINE === "true" || baseUrl === "local";
+    if (useLocalEngine || process.env.NODE_ENV === "test" || process.env.CRM_TEST_MODE === "true") {
+      return await TradingRuntimeService.updateAccountStatus({
+        accountId: input2.accountId,
+        status: input2.status,
+        tradingEnabled: input2.tradingEnabled,
+        reason: input2.reason || "Status updated via CRM",
+        tenantId: input2.tenantId,
+        adminUserId: input2.adminUserId
+      });
+    }
+    const timestamp = Date.now().toString();
+    const rawBody = JSON.stringify(input2);
+    const signature = this.generateM2MSignature(this.getSecret(), timestamp, rawBody);
+    try {
+      const res = await fetch(`${baseUrl}/api/v1/admin/trading/accounts/${input2.accountId}/status`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CRM-Timestamp": timestamp,
+          "X-CRM-Signature": signature
+        },
+        body: rawBody
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new TradingEngineBridgeError(data.code || "STATUS_UPDATE_FAILED", data.message, res.status);
+      }
+      return data;
+    } catch (err) {
+      if (err instanceof TradingEngineBridgeError) throw err;
+      throw new TradingEngineBridgeError("ENGINE_NETWORK_ERROR", err.message, 502);
+    }
+  }
+  /**
+   * Closes position on Trading Engine.
+   */
+  static async closePosition(input2) {
+    const baseUrl = this.getBaseUrl();
+    const useLocalEngine = process.env.CRM_USE_LOCAL_ENGINE === "true" || baseUrl === "local";
+    if (useLocalEngine || process.env.NODE_ENV === "test" || process.env.CRM_TEST_MODE === "true") {
+      return await TradingRuntimeService.closePosition({
+        positionId: input2.positionId,
+        adminUserId: input2.adminUserId,
+        reason: input2.reason || "Closed by Admin via CRM",
+        tenantId: input2.tenantId
+      });
+    }
+    const timestamp = Date.now().toString();
+    const rawBody = JSON.stringify(input2);
+    const signature = this.generateM2MSignature(this.getSecret(), timestamp, rawBody);
+    try {
+      const res = await fetch(`${baseUrl}/api/v1/admin/trading/positions/${input2.positionId}/close`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CRM-Timestamp": timestamp,
+          "X-CRM-Signature": signature
+        },
+        body: rawBody
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new TradingEngineBridgeError(data.code || "CLOSE_POSITION_FAILED", data.message, res.status);
+      }
+      return data;
+    } catch (err) {
+      if (err instanceof TradingEngineBridgeError) throw err;
+      throw new TradingEngineBridgeError("ENGINE_NETWORK_ERROR", err.message, 502);
+    }
+  }
+  /**
+   * Reconciles in-flight or ambiguous transfer state with Trading Engine.
+   */
+  static async reconcileFundingTransfer(referenceNo, tenantId) {
+    const baseUrl = this.getBaseUrl();
+    if (process.env.CRM_USE_LOCAL_ENGINE === "true" || baseUrl === "local" || process.env.NODE_ENV === "test" || process.env.CRM_TEST_MODE === "true") {
+      return { found: true, status: "confirmed", executionId: `rec-${referenceNo}` };
+    }
+    const timestamp = Date.now().toString();
+    const signature = this.generateM2MSignature(this.getSecret(), timestamp, "");
+    const tenantQuery = tenantId ? `?tenantId=${encodeURIComponent(tenantId)}` : "";
+    try {
+      const res = await fetch(`${baseUrl}/api/v1/admin/trading/funding/reconcile/${encodeURIComponent(referenceNo)}${tenantQuery}`, {
+        headers: {
+          "X-CRM-Timestamp": timestamp,
+          "X-CRM-Signature": signature
+        }
+      });
+      if (res.status === 404) {
+        return { found: false };
+      }
+      const data = await res.json().catch(() => ({}));
+      return {
+        found: true,
+        status: data.status || "confirmed",
+        executionId: data.executionId || data.transactionId
+      };
+    } catch {
+      return { found: false };
+    }
+  }
+  /**
    * Observability / Health probe against Trading Engine.
    */
   static async checkHealth() {
@@ -78088,6 +74980,3442 @@ var TradingEngineBridgeService = class {
     }
   }
 };
+
+// netlify/functions/services/trading-account.service.ts
+var TradingAccountService = class {
+  static sanitizeAuditDetails(obj) {
+    if (!obj || typeof obj !== "object") return obj;
+    const cloned = Array.isArray(obj) ? [...obj] : { ...obj };
+    const sensitiveKeys = ["secret", "signature", "token", "password", "key", "auth", "authorization", "crm_m2m_secret", "jwt"];
+    for (const k5 of Object.keys(cloned)) {
+      if (sensitiveKeys.some((s2) => k5.toLowerCase().includes(s2))) {
+        cloned[k5] = "[REDACTED]";
+      } else if (typeof cloned[k5] === "object" && cloned[k5] !== null) {
+        cloned[k5] = this.sanitizeAuditDetails(cloned[k5]);
+      }
+    }
+    return cloned;
+  }
+  /**
+   * Records an audit log entry for trading account events
+   */
+  static async recordAuditLog(actorId, action, targetId, details, ip, userAgent) {
+    const pool2 = getPool();
+    const now = /* @__PURE__ */ new Date();
+    const auditId = crypto9.randomUUID();
+    const sanitizedIp = ip ? String(ip).split(",")[0].trim().substring(0, 100) : null;
+    const sanitizedUserAgent = userAgent ? String(userAgent).substring(0, 500) : null;
+    const sanitizedDetails = this.sanitizeAuditDetails(details);
+    if (pool2) {
+      await query(
+        `INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, ip_address, user_agent, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [auditId, actorId, action, "trading_account", targetId, JSON.stringify(sanitizedDetails), sanitizedIp, sanitizedUserAgent, now]
+      );
+    } else {
+      const record2 = {
+        id: auditId,
+        actor_id: actorId,
+        action,
+        entity_type: "trading_account",
+        entity_id: targetId,
+        details: sanitizedDetails,
+        ip_address: sanitizedIp,
+        user_agent: sanitizedUserAgent,
+        created_at: now
+      };
+      inMemoryDb.auditLogs.unshift(record2);
+    }
+  }
+  /**
+   * Generates a numeric account login number
+   */
+  static generateAccountNumber(isDemo) {
+    const prefix = isDemo ? "90" : "20";
+    const rand = Math.floor(1e5 + Math.random() * 9e5);
+    return `${prefix}${rand}`;
+  }
+  /**
+   * Platform-agnostic terminal URL resolver based on platform and environment config
+   */
+  static resolveDefaultTerminalUrl(platform2) {
+    const cleanPlatform = (platform2 || "").trim().toUpperCase();
+    const envKey = `TERMINAL_URL_${cleanPlatform}`;
+    if (process.env[envKey]) {
+      return process.env[envKey];
+    }
+    if (process.env.DEFAULT_TERMINAL_URL) {
+      return process.env.DEFAULT_TERMINAL_URL;
+    }
+    switch (cleanPlatform) {
+      case "MT5":
+      case "MT4":
+        return "https://trade.mql5.com/trade";
+      case "CTRADER":
+        return "https://ct.spotware.com";
+      case "EDGETRADER":
+      case "AEROTRADER":
+      case "WEBTRADER":
+        return null;
+      default:
+        return null;
+    }
+  }
+  /**
+   * Safely decodes and hydrates a raw DB row or in-memory record into a full TradingAccountRecord
+   */
+  static hydrateAccountRecord(row) {
+    const isDemo = Boolean(row.is_demo);
+    let demoPassword = isDemo ? row.password || null : null;
+    let demoBalance = row.balance !== void 0 && row.balance !== null ? String(row.balance) : isDemo ? "10000.00" : "0.00";
+    let terminalUrl = row.terminal_url || null;
+    let cleanInvestorNotes = row.investor_notes || null;
+    let externalAccountId = row.external_account_id || null;
+    let tenantId = row.tenant_id || "default";
+    let ownershipType = row.user_id ? "client_linked" : "standalone";
+    let provisioningStatus = row.status === "active" ? "provisioned" : "unprovisioned";
+    let provisioningError = null;
+    let tradingEnabled = row.status !== "disabled" && row.status !== "archived";
+    if (row.investor_notes && typeof row.investor_notes === "string" && row.investor_notes.startsWith("{")) {
+      try {
+        const meta3 = JSON.parse(row.investor_notes);
+        if (isDemo && meta3.password !== void 0) demoPassword = meta3.password;
+        if (meta3.balance !== void 0) demoBalance = meta3.balance;
+        if (meta3.terminal_url !== void 0) terminalUrl = meta3.terminal_url;
+        if (meta3.external_account_id !== void 0) externalAccountId = meta3.external_account_id;
+        if (meta3.tenant_id !== void 0) tenantId = meta3.tenant_id;
+        if (meta3.ownership_type !== void 0) ownershipType = meta3.ownership_type;
+        if (meta3.provisioning_status !== void 0) provisioningStatus = meta3.provisioning_status;
+        if (meta3.provisioning_error !== void 0) provisioningError = meta3.provisioning_error;
+        if (meta3.trading_enabled !== void 0) tradingEnabled = meta3.trading_enabled;
+        if (meta3.notes !== void 0) cleanInvestorNotes = meta3.notes;
+      } catch {
+      }
+    }
+    if (row.provisioning_status) provisioningStatus = row.provisioning_status;
+    if (row.ownership_type) ownershipType = row.ownership_type;
+    if (row.provisioning_error !== void 0) provisioningError = row.provisioning_error;
+    if (row.trading_enabled !== void 0) tradingEnabled = row.trading_enabled;
+    if (isDemo) {
+      if (!demoBalance || demoBalance === "0" || demoBalance === "0.00") {
+        demoBalance = "10000.00";
+      }
+      if (!demoPassword) {
+        demoPassword = "Demo@" + (row.account_number ? String(row.account_number).slice(-4) : Math.floor(1e3 + Math.random() * 9e3));
+      }
+      if (!terminalUrl) {
+        terminalUrl = this.resolveDefaultTerminalUrl(row.platform);
+      }
+    }
+    return {
+      id: row.id,
+      account_number: String(row.account_number),
+      user_id: row.user_id || null,
+      ownership_type: ownershipType,
+      platform: row.platform,
+      account_type: row.account_type,
+      server_name: row.server_name,
+      currency: row.currency,
+      leverage: row.leverage,
+      status: row.status,
+      trading_enabled: tradingEnabled,
+      provisioning_status: provisioningStatus,
+      provisioning_error: provisioningError,
+      nickname: row.nickname || null,
+      is_demo: isDemo,
+      group_tier: row.group_tier || null,
+      external_account_id: externalAccountId,
+      tenant_id: tenantId,
+      investor_notes: cleanInvestorNotes,
+      admin_notes: row.admin_notes || null,
+      rejection_reason: row.rejection_reason || null,
+      approved_at: row.approved_at ? new Date(row.approved_at) : null,
+      approved_by: row.approved_by || null,
+      created_at: new Date(row.created_at),
+      updated_at: new Date(row.updated_at),
+      password: isDemo ? demoPassword : null,
+      // Plaintext passwords are NEVER stored or returned for live accounts
+      balance: demoBalance,
+      terminal_url: terminalUrl
+    };
+  }
+  /**
+   * Parses auxiliary fields from a record's investor_notes or raw JSON
+   */
+  static parseMetadata(record2) {
+    if (!record2) return {};
+    const notes = typeof record2 === "string" ? record2 : record2.investor_notes;
+    if (notes && typeof notes === "string" && notes.startsWith("{")) {
+      try {
+        return JSON.parse(notes);
+      } catch {
+        return { notes };
+      }
+    }
+    return { notes: notes || null };
+  }
+  /**
+   * Serializes auxiliary fields into a JSON string to ensure compatibility with all database engines
+   */
+  static serializeMetadata(record2) {
+    if (!record2) return JSON.stringify({});
+    return JSON.stringify({
+      password: record2.password ?? record2.demo_password ?? null,
+      balance: record2.balance ?? null,
+      terminal_url: record2.terminal_url ?? null,
+      ownership_type: record2.ownership_type ?? (record2.user_id ? "client_linked" : "standalone"),
+      provisioning_status: record2.provisioning_status ?? "provisioned",
+      provisioning_error: record2.provisioning_error ?? null,
+      trading_enabled: record2.trading_enabled ?? true,
+      notes: record2.notes ?? record2.investor_notes ?? null,
+      ...record2
+    });
+  }
+  /**
+   * Provision default demo trading account for a new or existing client
+   */
+  static async provisionDefaultDemoAccount(userId, preferredCurrency = "USD", ip, userAgent) {
+    const now = /* @__PURE__ */ new Date();
+    const accountId = crypto9.randomUUID();
+    const accountNumber = this.generateAccountNumber(true);
+    const defaultPlatform = process.env.DEFAULT_TRADING_PLATFORM || "MT5";
+    const defaultServer = process.env.DEFAULT_DEMO_SERVER || `${defaultPlatform}-Demo-Server`;
+    const defaultTerminalUrl = this.resolveDefaultTerminalUrl(defaultPlatform);
+    const demoPassword = "Demo@" + Math.floor(1e3 + Math.random() * 9e3);
+    const initialBalance = "10000.00";
+    const currency = (preferredCurrency || "USD").toUpperCase();
+    const leverage = "1:100";
+    const newAccount = {
+      id: accountId,
+      account_number: accountNumber,
+      user_id: userId,
+      platform: defaultPlatform,
+      account_type: "standard",
+      server_name: defaultServer,
+      currency,
+      leverage,
+      status: "active",
+      nickname: "Default Demo Account",
+      is_demo: true,
+      group_tier: `demo_${currency.toLowerCase()}`,
+      investor_notes: null,
+      admin_notes: "System provisioned default demo account upon client registration",
+      rejection_reason: null,
+      approved_at: now,
+      approved_by: "SYSTEM",
+      created_at: now,
+      updated_at: now,
+      password: demoPassword,
+      balance: initialBalance,
+      terminal_url: defaultTerminalUrl
+    };
+    const pool2 = getPool();
+    if (pool2) {
+      const serializedNotes = this.serializeMetadata(newAccount);
+      await query(
+        `INSERT INTO trading_accounts 
+         (id, account_number, user_id, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, group_tier, investor_notes, admin_notes, created_at, updated_at, approved_at, approved_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+        [
+          newAccount.id,
+          newAccount.account_number,
+          newAccount.user_id,
+          newAccount.platform,
+          newAccount.account_type,
+          newAccount.server_name,
+          newAccount.currency,
+          newAccount.leverage,
+          newAccount.status,
+          newAccount.nickname,
+          newAccount.is_demo,
+          newAccount.group_tier,
+          serializedNotes,
+          newAccount.admin_notes,
+          newAccount.created_at,
+          newAccount.updated_at,
+          newAccount.approved_at,
+          newAccount.approved_by
+        ]
+      );
+    } else {
+      inMemoryDb.tradingAccounts.set(newAccount.id, { ...newAccount });
+    }
+    await this.recordAuditLog(
+      userId,
+      "DEMO_ACCOUNT_PROVISIONED",
+      newAccount.id,
+      {
+        account_number: newAccount.account_number,
+        platform: newAccount.platform,
+        account_type: newAccount.account_type,
+        currency: newAccount.currency,
+        leverage: newAccount.leverage,
+        balance: newAccount.balance,
+        server_name: newAccount.server_name,
+        status: newAccount.status,
+        is_demo: true,
+        terminal_url: newAccount.terminal_url
+      },
+      ip,
+      userAgent
+    );
+    return newAccount;
+  }
+  /**
+   * Register a new trading account request for a user
+   */
+  static async registerAccount(userId, input2, ip, userAgent) {
+    const now = /* @__PURE__ */ new Date();
+    const accountId = crypto9.randomUUID();
+    const accountNumber = this.generateAccountNumber(input2.is_demo);
+    const defaultServer = input2.server_name || (input2.is_demo ? `${input2.platform}-Demo-Server` : `${input2.platform}-Real-Server-1`);
+    const status = input2.is_demo ? "active" : "pending_approval";
+    const demoPassword = input2.is_demo ? "Demo@" + Math.floor(1e3 + Math.random() * 9e3) : null;
+    const demoBalance = input2.is_demo ? "10000.00" : "0.00";
+    const terminalUrl = input2.is_demo ? this.resolveDefaultTerminalUrl(input2.platform) : null;
+    const newAccount = {
+      id: accountId,
+      account_number: accountNumber,
+      user_id: userId,
+      platform: input2.platform,
+      account_type: input2.account_type,
+      server_name: defaultServer,
+      currency: input2.currency.toUpperCase(),
+      leverage: input2.leverage,
+      status,
+      nickname: input2.nickname?.trim() || null,
+      is_demo: input2.is_demo,
+      group_tier: `${input2.account_type}_${input2.currency.toLowerCase()}`,
+      created_at: now,
+      updated_at: now,
+      approved_at: input2.is_demo ? now : null,
+      approved_by: input2.is_demo ? "SYSTEM" : null,
+      password: demoPassword,
+      balance: demoBalance,
+      terminal_url: terminalUrl
+    };
+    const pool2 = getPool();
+    if (pool2) {
+      const serializedNotes = this.serializeMetadata(newAccount);
+      await query(
+        `INSERT INTO trading_accounts 
+         (id, account_number, user_id, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, group_tier, investor_notes, created_at, updated_at, approved_at, approved_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+        [
+          newAccount.id,
+          newAccount.account_number,
+          newAccount.user_id,
+          newAccount.platform,
+          newAccount.account_type,
+          newAccount.server_name,
+          newAccount.currency,
+          newAccount.leverage,
+          newAccount.status,
+          newAccount.nickname,
+          newAccount.is_demo,
+          newAccount.group_tier,
+          serializedNotes,
+          newAccount.created_at,
+          newAccount.updated_at,
+          newAccount.approved_at,
+          newAccount.approved_by
+        ]
+      );
+    } else {
+      inMemoryDb.tradingAccounts.set(newAccount.id, { ...newAccount });
+    }
+    await this.recordAuditLog(
+      userId,
+      "TRADING_ACCOUNT_REGISTERED",
+      newAccount.id,
+      {
+        account_number: newAccount.account_number,
+        platform: newAccount.platform,
+        account_type: newAccount.account_type,
+        currency: newAccount.currency,
+        leverage: newAccount.leverage,
+        is_demo: newAccount.is_demo,
+        status: newAccount.status
+      },
+      ip,
+      userAgent
+    );
+    return newAccount;
+  }
+  /**
+   * Link an existing external trading account to the user's CRM profile
+   */
+  static async linkExistingAccount(userId, input2, ip, userAgent) {
+    const cleanAccountNumber = input2.account_number.trim();
+    const pool2 = getPool();
+    if (pool2) {
+      const existing = await query(
+        `SELECT * FROM trading_accounts 
+         WHERE account_number = $1 AND platform = $2 AND status != 'archived'`,
+        [cleanAccountNumber, input2.platform]
+      );
+      if (existing.length > 0) {
+        throw new Error("This trading account number is already linked or pending review in the CRM");
+      }
+    } else {
+      for (const acc of inMemoryDb.tradingAccounts.values()) {
+        if (acc.account_number === cleanAccountNumber && acc.platform === input2.platform && acc.status !== "archived") {
+          throw new Error("This trading account number is already linked or pending review in the CRM");
+        }
+      }
+    }
+    const now = /* @__PURE__ */ new Date();
+    const accountId = crypto9.randomUUID();
+    const linkedAccount = {
+      id: accountId,
+      account_number: cleanAccountNumber,
+      user_id: userId,
+      platform: input2.platform,
+      account_type: input2.account_type,
+      server_name: input2.server_name.trim(),
+      currency: input2.currency.toUpperCase(),
+      leverage: input2.leverage,
+      status: "pending_approval",
+      nickname: input2.nickname?.trim() || null,
+      is_demo: false,
+      investor_notes: input2.investor_notes?.trim() || null,
+      group_tier: `${input2.account_type}_${input2.currency.toLowerCase()}`,
+      created_at: now,
+      updated_at: now
+    };
+    if (pool2) {
+      await query(
+        `INSERT INTO trading_accounts 
+         (id, account_number, user_id, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, investor_notes, group_tier, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+        [
+          linkedAccount.id,
+          linkedAccount.account_number,
+          linkedAccount.user_id,
+          linkedAccount.platform,
+          linkedAccount.account_type,
+          linkedAccount.server_name,
+          linkedAccount.currency,
+          linkedAccount.leverage,
+          linkedAccount.status,
+          linkedAccount.nickname,
+          linkedAccount.is_demo,
+          linkedAccount.investor_notes,
+          linkedAccount.group_tier,
+          linkedAccount.created_at,
+          linkedAccount.updated_at
+        ]
+      );
+    } else {
+      inMemoryDb.tradingAccounts.set(linkedAccount.id, linkedAccount);
+    }
+    await this.recordAuditLog(
+      userId,
+      "TRADING_ACCOUNT_LINK_REQUESTED",
+      linkedAccount.id,
+      {
+        account_number: linkedAccount.account_number,
+        platform: linkedAccount.platform,
+        server_name: linkedAccount.server_name,
+        currency: linkedAccount.currency,
+        status: linkedAccount.status
+      },
+      ip,
+      userAgent
+    );
+    return linkedAccount;
+  }
+  /**
+   * Get all trading accounts owned by a specific user (Client view)
+   */
+  static async getUserAccounts(userId) {
+    const pool2 = getPool();
+    let accounts = [];
+    if (pool2) {
+      const rows = await query(
+        `SELECT * FROM trading_accounts WHERE user_id = $1 AND status != 'archived' ORDER BY created_at DESC`,
+        [userId]
+      );
+      accounts = rows.map((r5) => this.hydrateAccountRecord(r5));
+    } else {
+      const results = [];
+      for (const acc of inMemoryDb.tradingAccounts.values()) {
+        if (acc.user_id === userId && acc.status !== "archived") {
+          results.push(this.hydrateAccountRecord(acc));
+        }
+      }
+      accounts = results.sort((a5, b5) => b5.created_at.getTime() - a5.created_at.getTime());
+    }
+    if (accounts.length === 0) {
+      try {
+        const defaultDemo = await this.provisionDefaultDemoAccount(userId);
+        accounts = [defaultDemo];
+      } catch (err) {
+        console.error("Error auto-provisioning demo account for client:", err);
+      }
+    }
+    return accounts;
+  }
+  /**
+   * Get a single trading account by ID with strict IDOR ownership check
+   */
+  static async getUserAccountById(userId, accountId) {
+    const account = await this.findRawAccount(accountId);
+    if (!account) {
+      const err = new Error("Trading account not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    if (account.user_id !== userId) {
+      const err = new Error("Access forbidden: you do not have permission to access this trading account");
+      err.statusCode = 403;
+      throw err;
+    }
+    return account;
+  }
+  /**
+   * Update nickname/display label of a trading account with strict IDOR ownership check
+   */
+  static async updateUserAccountNickname(userId, accountId, nickname, ip, userAgent) {
+    const account = await this.getUserAccountById(userId, accountId);
+    const updatedNickname = nickname?.trim() || null;
+    const now = /* @__PURE__ */ new Date();
+    const pool2 = getPool();
+    if (pool2) {
+      await query(
+        `UPDATE trading_accounts SET nickname = $1, updated_at = $2 WHERE id = $3`,
+        [updatedNickname, now, accountId]
+      );
+    } else {
+      const record2 = inMemoryDb.tradingAccounts.get(accountId);
+      if (record2) {
+        record2.nickname = updatedNickname;
+        record2.updated_at = now;
+      }
+    }
+    account.nickname = updatedNickname;
+    account.updated_at = now;
+    await this.recordAuditLog(
+      userId,
+      "TRADING_ACCOUNT_NICKNAME_UPDATED",
+      accountId,
+      {
+        account_number: account.account_number,
+        nickname: updatedNickname
+      },
+      ip,
+      userAgent
+    );
+    return account;
+  }
+  /**
+   * Request leverage change on a trading account with strict IDOR ownership check
+   */
+  static async requestLeverageChange(userId, accountId, requestedLeverage, reason, ip, userAgent) {
+    const account = await this.getUserAccountById(userId, accountId);
+    if (account.status === "archived" || account.status === "disabled") {
+      const err = new Error(`Cannot request leverage change on an account with status '${account.status}'`);
+      err.statusCode = 400;
+      throw err;
+    }
+    await this.recordAuditLog(
+      userId,
+      "TRADING_ACCOUNT_LEVERAGE_CHANGE_REQUESTED",
+      accountId,
+      {
+        account_number: account.account_number,
+        current_leverage: account.leverage,
+        requested_leverage: requestedLeverage,
+        reason: reason || null
+      },
+      ip,
+      userAgent
+    );
+    return {
+      message: `Leverage change request to ${requestedLeverage} submitted for administrative review`,
+      account
+    };
+  }
+  // =========================================================================
+  // ADMIN WORKFLOWS
+  // =========================================================================
+  /**
+   * List all trading accounts across the broker with search and filters (Admin view)
+   */
+  static async getAllAccountsAdmin(filters = {}) {
+    const pool2 = getPool();
+    if (pool2) {
+      let sql = `
+        SELECT ta.*, u.first_name, u.last_name, u.email, u.country
+        FROM trading_accounts ta
+        JOIN users u ON ta.user_id = u.id
+        WHERE 1=1
+      `;
+      const params = [];
+      if (filters.status) {
+        params.push(filters.status);
+        sql += ` AND ta.status = $${params.length}`;
+      }
+      if (filters.platform) {
+        params.push(filters.platform);
+        sql += ` AND ta.platform = $${params.length}`;
+      }
+      if (filters.user_id) {
+        params.push(filters.user_id);
+        sql += ` AND ta.user_id = $${params.length}`;
+      }
+      if (filters.search) {
+        params.push(`%${filters.search.toLowerCase()}%`);
+        sql += ` AND (LOWER(ta.account_number) LIKE $${params.length} OR LOWER(u.email) LIKE $${params.length} OR LOWER(ta.nickname) LIKE $${params.length})`;
+      }
+      sql += ` ORDER BY ta.created_at DESC`;
+      const rows = await query(sql, params);
+      return rows.map((r5) => {
+        const hydrated = this.hydrateAccountRecord(r5);
+        return {
+          ...hydrated,
+          owner: {
+            id: r5.user_id,
+            first_name: r5.first_name,
+            last_name: r5.last_name,
+            email: r5.email,
+            country: r5.country
+          }
+        };
+      });
+    }
+    const results = [];
+    for (const acc of inMemoryDb.tradingAccounts.values()) {
+      if (filters.status && acc.status !== filters.status) continue;
+      if (filters.platform && acc.platform !== filters.platform) continue;
+      if (filters.user_id && acc.user_id !== filters.user_id) continue;
+      let owner = void 0;
+      for (const u of inMemoryDb.users.values()) {
+        if (u.id === acc.user_id) {
+          owner = u;
+          break;
+        }
+      }
+      if (filters.search) {
+        const term = filters.search.toLowerCase();
+        const matchNum = acc.account_number.toLowerCase().includes(term);
+        const matchNick = acc.nickname?.toLowerCase().includes(term);
+        const matchEmail = owner?.email.toLowerCase().includes(term);
+        if (!matchNum && !matchNick && !matchEmail) continue;
+      }
+      const hydrated = this.hydrateAccountRecord(acc);
+      results.push({
+        ...hydrated,
+        owner: owner ? {
+          id: owner.id,
+          first_name: owner.first_name,
+          last_name: owner.last_name,
+          email: owner.email,
+          country: owner.country
+        } : void 0
+      });
+    }
+    return results.sort((a5, b5) => b5.created_at.getTime() - a5.created_at.getTime());
+  }
+  /**
+   * Get single trading account detail with owner and audit logs (Admin view)
+   */
+  static async getAccountByIdAdmin(accountId) {
+    const account = await this.findRawAccount(accountId);
+    if (!account) {
+      const err = new Error("Trading account not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    let owner = void 0;
+    const pool2 = getPool();
+    if (pool2) {
+      const userRows = await query(`SELECT * FROM users WHERE id = $1`, [account.user_id]);
+      owner = userRows[0];
+    } else {
+      for (const u of inMemoryDb.users.values()) {
+        if (u.id === account.user_id) {
+          owner = u;
+          break;
+        }
+      }
+    }
+    let auditLogs = [];
+    if (pool2) {
+      auditLogs = await query(
+        `SELECT * FROM audit_logs WHERE entity_type = 'trading_account' AND entity_id = $1 ORDER BY created_at DESC`,
+        [accountId]
+      );
+    } else {
+      auditLogs = inMemoryDb.auditLogs.filter(
+        (log3) => log3.entity_type === "trading_account" && log3.entity_id === accountId
+      );
+    }
+    return {
+      account: {
+        ...account,
+        owner: owner ? {
+          id: owner.id,
+          first_name: owner.first_name,
+          last_name: owner.last_name,
+          email: owner.email,
+          country: owner.country
+        } : void 0
+      },
+      audit_trail: auditLogs
+    };
+  }
+  /**
+   * Approve a pending trading account (Admin workflow)
+   */
+  static async approveAccount(adminId, accountId, input2, ip, userAgent) {
+    const account = await this.findRawAccount(accountId);
+    if (!account) {
+      const err = new Error("Trading account not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    if (account.status === "active") {
+      const err = new Error("This trading account is already active");
+      err.statusCode = 400;
+      throw err;
+    }
+    const now = /* @__PURE__ */ new Date();
+    const updatedAccountNumber = input2.account_number?.trim() || account.account_number;
+    const updatedServer = input2.server_name?.trim() || account.server_name;
+    const updatedGroupTier = input2.group_tier?.trim() || account.group_tier;
+    const adminNotes = input2.admin_notes?.trim() || account.admin_notes;
+    try {
+      const numLeverage = parseInt((account.leverage || "100").replace("1:", ""), 10) || 100;
+      await TradingEngineBridgeService.provisionTradingAccount({
+        accountId: account.id,
+        accountNumber: updatedAccountNumber,
+        currency: account.currency,
+        leverage: numLeverage,
+        accountType: account.account_type,
+        isDemo: account.is_demo,
+        initialBalance: parseFloat(account.balance || "0") || 0,
+        serverName: updatedServer,
+        tradingEnabled: true,
+        status: "ACTIVE",
+        tenantId: "default",
+        idempotencyKey: `prov-appr-${account.id}`
+      });
+      account.provisioning_status = "provisioned";
+      account.provisioned_at = now;
+      account.status = "active";
+      account.trading_enabled = true;
+    } catch (err) {
+      account.provisioning_status = "failed";
+      account.provisioning_error = err.message || "Remote engine provisioning failed upon approval";
+      account.status = "pending_approval";
+      account.trading_enabled = false;
+    }
+    account.account_number = updatedAccountNumber;
+    account.server_name = updatedServer;
+    account.group_tier = updatedGroupTier;
+    account.admin_notes = adminNotes;
+    account.approved_at = account.status === "active" ? now : null;
+    account.approved_by = account.status === "active" ? adminId : null;
+    account.updated_at = now;
+    const pool2 = getPool();
+    if (pool2) {
+      await query(
+        `UPDATE trading_accounts 
+         SET status = $1, account_number = $2, server_name = $3, group_tier = $4, admin_notes = $5, approved_at = $6, approved_by = $7, updated_at = $8
+         WHERE id = $9`,
+        [account.status, updatedAccountNumber, updatedServer, updatedGroupTier, adminNotes, account.approved_at, account.approved_by, now, accountId]
+      );
+    } else {
+      const record2 = inMemoryDb.tradingAccounts.get(accountId);
+      if (record2) {
+        record2.status = account.status;
+        record2.provisioning_status = account.provisioning_status;
+        record2.provisioning_error = account.provisioning_error;
+        record2.account_number = updatedAccountNumber;
+        record2.server_name = updatedServer;
+        record2.group_tier = updatedGroupTier;
+        record2.admin_notes = adminNotes;
+        record2.approved_at = account.approved_at;
+        record2.approved_by = account.approved_by;
+        record2.updated_at = now;
+      }
+    }
+    await this.recordAuditLog(
+      adminId,
+      "TRADING_ACCOUNT_APPROVED",
+      accountId,
+      {
+        account_number: account.account_number,
+        server_name: account.server_name,
+        group_tier: account.group_tier,
+        provisioning_status: account.provisioning_status,
+        provisioning_error: account.provisioning_error || null,
+        admin_notes: adminNotes
+      },
+      ip,
+      userAgent
+    );
+    if (account.user_id) {
+      await NotificationService.createNotification(
+        account.user_id,
+        "Trading Account Approved",
+        `Your trading account #${account.account_number} (${account.platform}) is now active.`,
+        "trading_account",
+        { account_id: account.id, account_number: account.account_number, platform: account.platform }
+      );
+    }
+    return account;
+  }
+  /**
+   * Reject a pending trading account (Admin workflow)
+   */
+  static async rejectAccount(adminId, accountId, input2, ip, userAgent) {
+    const account = await this.findRawAccount(accountId);
+    if (!account) {
+      const err = new Error("Trading account not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    const now = /* @__PURE__ */ new Date();
+    const rejectionReason = input2.rejection_reason.trim();
+    const adminNotes = input2.admin_notes?.trim() || account.admin_notes;
+    const pool2 = getPool();
+    if (pool2) {
+      await query(
+        `UPDATE trading_accounts 
+         SET status = 'disabled', rejection_reason = $1, admin_notes = $2, updated_at = $3
+         WHERE id = $4`,
+        [rejectionReason, adminNotes, now, accountId]
+      );
+    } else {
+      const record2 = inMemoryDb.tradingAccounts.get(accountId);
+      if (record2) {
+        record2.status = "disabled";
+        record2.rejection_reason = rejectionReason;
+        record2.admin_notes = adminNotes;
+        record2.updated_at = now;
+      }
+    }
+    account.status = "disabled";
+    account.rejection_reason = rejectionReason;
+    account.admin_notes = adminNotes;
+    account.updated_at = now;
+    await this.recordAuditLog(
+      adminId,
+      "TRADING_ACCOUNT_REJECTED",
+      accountId,
+      {
+        account_number: account.account_number,
+        rejection_reason: rejectionReason,
+        admin_notes: adminNotes
+      },
+      ip,
+      userAgent
+    );
+    await NotificationService.createNotification(
+      account.user_id,
+      "Trading Account Application Rejected",
+      `Your trading account registration was rejected. Reason: ${rejectionReason}`,
+      "trading_account",
+      { account_id: account.id, rejection_reason: rejectionReason }
+    );
+    return account;
+  }
+  /**
+   * Change account status (e.g. active, read_only, disabled, archived) (Admin workflow)
+   */
+  static async updateAccountStatus(adminId, accountId, newStatus, adminNotes, ip, userAgent) {
+    const account = await this.findRawAccount(accountId);
+    if (!account) {
+      const err = new Error("Trading account not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    const oldStatus = account.status;
+    const now = /* @__PURE__ */ new Date();
+    const notes = adminNotes?.trim() || account.admin_notes;
+    const pool2 = getPool();
+    if (pool2) {
+      await query(
+        `UPDATE trading_accounts SET status = $1, admin_notes = $2, updated_at = $3 WHERE id = $4`,
+        [newStatus, notes, now, accountId]
+      );
+    } else {
+      const record2 = inMemoryDb.tradingAccounts.get(accountId);
+      if (record2) {
+        record2.status = newStatus;
+        record2.admin_notes = notes;
+        record2.updated_at = now;
+      }
+    }
+    account.status = newStatus;
+    account.admin_notes = notes;
+    account.updated_at = now;
+    await this.recordAuditLog(
+      adminId,
+      "TRADING_ACCOUNT_STATUS_CHANGED",
+      accountId,
+      {
+        account_number: account.account_number,
+        previous_status: oldStatus,
+        new_status: newStatus,
+        admin_notes: notes
+      },
+      ip,
+      userAgent
+    );
+    return account;
+  }
+  /**
+   * Update trading account metadata such as login, password, platform, server name, leverage, balance, status, terminal URL, etc. (Admin workflow)
+   */
+  static async updateMetadataAdmin(adminId, accountId, input2, ip, userAgent) {
+    const account = await this.findRawAccount(accountId);
+    if (!account) {
+      const err = new Error("Trading account not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    const now = /* @__PURE__ */ new Date();
+    const updatedAccountNumber = input2.account_number?.trim() || account.account_number;
+    const updatedPlatform = input2.platform?.trim() || account.platform;
+    const updatedServer = input2.server_name !== void 0 ? input2.server_name?.trim() || "" : account.server_name;
+    const updatedCurrency = input2.currency ? input2.currency.trim().toUpperCase() : account.currency;
+    const updatedLeverage = input2.leverage || account.leverage;
+    const updatedBalance = input2.balance !== void 0 ? input2.balance.trim() : account.balance || (account.is_demo ? "10000.00" : "0.00");
+    const updatedStatus = input2.status || account.status;
+    const updatedTerminalUrl = input2.terminal_url !== void 0 ? input2.terminal_url?.trim() || null : account.terminal_url || null;
+    const updatedGroupTier = input2.group_tier !== void 0 ? input2.group_tier?.trim() || null : account.group_tier;
+    const updatedExternalAccountId = input2.external_account_id !== void 0 ? input2.external_account_id?.trim() || null : account.external_account_id || null;
+    const updatedTenantId = input2.tenant_id !== void 0 ? input2.tenant_id?.trim() || "default" : account.tenant_id || "default";
+    const updatedType = input2.account_type || account.account_type;
+    const updatedAdminNotes = input2.admin_notes !== void 0 ? input2.admin_notes?.trim() || null : account.admin_notes;
+    const updatedNickname = input2.nickname !== void 0 ? input2.nickname?.trim() || null : account.nickname;
+    const updatedPassword = account.is_demo && input2.password !== void 0 ? input2.password?.trim() || null : account.is_demo ? account.password : null;
+    account.account_number = updatedAccountNumber;
+    account.platform = updatedPlatform;
+    account.server_name = updatedServer;
+    account.currency = updatedCurrency;
+    account.leverage = updatedLeverage;
+    account.balance = updatedBalance;
+    account.status = updatedStatus;
+    account.terminal_url = updatedTerminalUrl;
+    account.group_tier = updatedGroupTier;
+    account.external_account_id = updatedExternalAccountId;
+    account.tenant_id = updatedTenantId;
+    account.account_type = updatedType;
+    account.admin_notes = updatedAdminNotes;
+    account.nickname = updatedNickname;
+    account.password = updatedPassword;
+    account.updated_at = now;
+    const pool2 = getPool();
+    if (pool2) {
+      const serializedNotes = this.serializeMetadata(account);
+      try {
+        await query(
+          `UPDATE trading_accounts 
+           SET account_number = $1, platform = $2, server_name = $3, currency = $4, leverage = $5, status = $6, group_tier = $7, external_account_id = $8, tenant_id = $9, account_type = $10, admin_notes = $11, nickname = $12, investor_notes = $13, updated_at = $14
+           WHERE id = $15`,
+          [
+            updatedAccountNumber,
+            updatedPlatform,
+            updatedServer,
+            updatedCurrency,
+            updatedLeverage,
+            updatedStatus,
+            updatedGroupTier,
+            updatedExternalAccountId,
+            updatedTenantId,
+            updatedType,
+            updatedAdminNotes,
+            updatedNickname,
+            serializedNotes,
+            now,
+            accountId
+          ]
+        );
+      } catch {
+        await query(
+          `UPDATE trading_accounts 
+           SET account_number = $1, platform = $2, server_name = $3, currency = $4, leverage = $5, status = $6, group_tier = $7, account_type = $8, admin_notes = $9, nickname = $10, investor_notes = $11, updated_at = $12
+           WHERE id = $13`,
+          [
+            updatedAccountNumber,
+            updatedPlatform,
+            updatedServer,
+            updatedCurrency,
+            updatedLeverage,
+            updatedStatus,
+            updatedGroupTier,
+            updatedType,
+            updatedAdminNotes,
+            updatedNickname,
+            serializedNotes,
+            now,
+            accountId
+          ]
+        );
+      }
+    } else {
+      const record2 = inMemoryDb.tradingAccounts.get(accountId);
+      if (record2) {
+        Object.assign(record2, account);
+      }
+    }
+    await this.recordAuditLog(
+      adminId,
+      "TRADING_ACCOUNT_METADATA_UPDATED",
+      accountId,
+      {
+        account_number: account.account_number,
+        platform: account.platform,
+        server_name: account.server_name,
+        currency: account.currency,
+        leverage: account.leverage,
+        balance: account.balance,
+        status: account.status,
+        terminal_url: account.terminal_url,
+        group_tier: account.group_tier,
+        external_account_id: account.external_account_id,
+        tenant_id: account.tenant_id,
+        account_type: account.account_type,
+        password_changed: account.is_demo && input2.password !== void 0,
+        admin_notes: updatedAdminNotes
+      },
+      ip,
+      userAgent
+    );
+    return account;
+  }
+  /**
+   * Admin direct provisioning of a trading account for a client.
+   * Authoritatively creates and maps the account record with status 'active'.
+   */
+  static async provisionAccountAdmin(adminUserId, input2, ip, userAgent) {
+    const pool2 = getPool();
+    let targetUser = null;
+    const isStandalone = !input2.user_id || input2.ownership_type === "standalone" || input2.user_id.trim() === "";
+    if (!isStandalone && input2.user_id) {
+      if (pool2) {
+        const userRows = await query(`SELECT * FROM users WHERE id = $1`, [input2.user_id]);
+        if (userRows.length === 0) {
+          const err = new Error("Target client user not found");
+          err.statusCode = 404;
+          throw err;
+        }
+        targetUser = userRows[0];
+      } else {
+        for (const u of inMemoryDb.users.values()) {
+          if (u.id === input2.user_id) {
+            targetUser = u;
+            break;
+          }
+        }
+        if (!targetUser) {
+          const err = new Error("Target client user not found");
+          err.statusCode = 404;
+          throw err;
+        }
+      }
+      if (targetUser.role !== "client") {
+        const err = new Error("Trading accounts can only be provisioned for client users");
+        err.statusCode = 400;
+        throw err;
+      }
+    }
+    const now = /* @__PURE__ */ new Date();
+    const accountId = crypto9.randomUUID();
+    const accountNumber = input2.account_number?.trim() || this.generateAccountNumber(input2.is_demo);
+    const defaultServer = input2.server_name?.trim() || (input2.is_demo ? `${input2.platform}-Demo-Server` : `${input2.platform}-Real-Server-1`);
+    const initialBalance = input2.initial_balance?.trim() || (input2.is_demo ? "10000.00" : "0.00");
+    const demoPassword = input2.is_demo ? "Demo@" + Math.floor(1e3 + Math.random() * 9e3) : null;
+    const terminalUrl = this.resolveDefaultTerminalUrl(input2.platform);
+    const currency = (input2.currency || "USD").toUpperCase();
+    const leverage = input2.leverage || "1:100";
+    const groupTier = input2.group_tier?.trim() || `${input2.account_type}_${currency.toLowerCase()}`;
+    const adminNotes = input2.admin_notes?.trim() || `Directly provisioned by administrator (${adminUserId})`;
+    const externalAccountId = input2.external_account_id?.trim() || null;
+    const nickname = input2.nickname?.trim() || null;
+    const newAccount = {
+      id: accountId,
+      account_number: accountNumber,
+      user_id: targetUser ? targetUser.id : null,
+      ownership_type: targetUser ? "client_linked" : "standalone",
+      platform: input2.platform,
+      account_type: input2.account_type,
+      server_name: defaultServer,
+      currency,
+      leverage,
+      status: "active",
+      trading_enabled: true,
+      provisioning_status: "provisioning",
+      nickname,
+      is_demo: input2.is_demo,
+      group_tier: groupTier,
+      external_account_id: externalAccountId,
+      tenant_id: "default",
+      investor_notes: null,
+      admin_notes: adminNotes,
+      rejection_reason: null,
+      approved_at: now,
+      approved_by: adminUserId,
+      created_at: now,
+      updated_at: now,
+      password: demoPassword,
+      balance: initialBalance,
+      terminal_url: terminalUrl
+    };
+    try {
+      const numLeverage = parseInt(leverage.replace("1:", ""), 10) || 100;
+      await TradingEngineBridgeService.provisionTradingAccount({
+        accountId: newAccount.id,
+        accountNumber: newAccount.account_number,
+        currency: newAccount.currency,
+        leverage: numLeverage,
+        accountType: newAccount.account_type,
+        isDemo: newAccount.is_demo,
+        initialBalance: parseFloat(initialBalance) || 0,
+        serverName: newAccount.server_name,
+        tradingEnabled: true,
+        status: "ACTIVE",
+        tenantId: "default",
+        idempotencyKey: `prov-${newAccount.id}`
+      });
+      newAccount.provisioning_status = "provisioned";
+      newAccount.provisioned_at = now;
+      newAccount.status = "active";
+      newAccount.trading_enabled = true;
+    } catch (err) {
+      newAccount.provisioning_status = "failed";
+      newAccount.provisioning_error = err.message || "Remote engine provisioning failed";
+      newAccount.status = "pending_approval";
+      newAccount.trading_enabled = false;
+      newAccount.approved_at = null;
+      newAccount.approved_by = null;
+    }
+    if (pool2) {
+      const serializedNotes = this.serializeMetadata(newAccount);
+      try {
+        await query(
+          `INSERT INTO trading_accounts 
+           (id, account_number, user_id, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, group_tier, external_account_id, tenant_id, investor_notes, admin_notes, created_at, updated_at, approved_at, approved_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+          [
+            newAccount.id,
+            newAccount.account_number,
+            newAccount.user_id,
+            newAccount.platform,
+            newAccount.account_type,
+            newAccount.server_name,
+            newAccount.currency,
+            newAccount.leverage,
+            newAccount.status,
+            newAccount.nickname,
+            newAccount.is_demo,
+            newAccount.group_tier,
+            newAccount.external_account_id,
+            newAccount.tenant_id,
+            serializedNotes,
+            newAccount.admin_notes,
+            newAccount.created_at,
+            newAccount.updated_at,
+            newAccount.approved_at,
+            newAccount.approved_by
+          ]
+        );
+      } catch {
+        await query(
+          `INSERT INTO trading_accounts 
+           (id, account_number, user_id, platform, account_type, server_name, currency, leverage, status, nickname, is_demo, group_tier, investor_notes, admin_notes, created_at, updated_at, approved_at, approved_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+          [
+            newAccount.id,
+            newAccount.account_number,
+            newAccount.user_id,
+            newAccount.platform,
+            newAccount.account_type,
+            newAccount.server_name,
+            newAccount.currency,
+            newAccount.leverage,
+            newAccount.status,
+            newAccount.nickname,
+            newAccount.is_demo,
+            newAccount.group_tier,
+            serializedNotes,
+            newAccount.admin_notes,
+            newAccount.created_at,
+            newAccount.updated_at,
+            newAccount.approved_at,
+            newAccount.approved_by
+          ]
+        );
+      }
+    } else {
+      inMemoryDb.tradingAccounts.set(newAccount.id, { ...newAccount });
+    }
+    await this.recordAuditLog(
+      adminUserId,
+      "TRADING_ACCOUNT_PROVISIONED_ADMIN",
+      newAccount.id,
+      {
+        account_id: newAccount.id,
+        account_number: newAccount.account_number,
+        ownership_type: newAccount.ownership_type,
+        user_id: targetUser ? targetUser.id : null,
+        user_email: targetUser ? targetUser.email : null,
+        platform: newAccount.platform,
+        account_type: newAccount.account_type,
+        currency: newAccount.currency,
+        leverage: newAccount.leverage,
+        is_demo: newAccount.is_demo,
+        server_name: newAccount.server_name,
+        group_tier: newAccount.group_tier,
+        provisioning_status: newAccount.provisioning_status,
+        provisioning_error: newAccount.provisioning_error || null,
+        external_account_id: newAccount.external_account_id,
+        admin_notes: adminNotes
+      },
+      ip,
+      userAgent
+    );
+    if (targetUser) {
+      await NotificationService.createNotification(
+        targetUser.id,
+        "Trading Account Provisioned",
+        `An administrator has provisioned a new ${newAccount.is_demo ? "Demo" : "Live"} trading account #${newAccount.account_number} (${newAccount.platform}) for you.`,
+        "trading_account",
+        { account_id: newAccount.id, account_number: newAccount.account_number, platform: newAccount.platform }
+      );
+    }
+    return newAccount;
+  }
+  /**
+   * Updates balance of a trading account (used by financial transfer approval workflow)
+   */
+  static async updateAccountBalance(accountId, newBalance) {
+    const account = await this.findRawAccount(accountId);
+    if (!account) {
+      const err = new Error("Trading account not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    const now = /* @__PURE__ */ new Date();
+    account.balance = newBalance;
+    account.updated_at = now;
+    const pool2 = getPool();
+    if (pool2) {
+      const serializedNotes = this.serializeMetadata(account);
+      try {
+        await query(
+          `UPDATE trading_accounts 
+           SET balance = $1, investor_notes = $2, updated_at = $3
+           WHERE id = $4`,
+          [newBalance, serializedNotes, now, accountId]
+        );
+      } catch (err) {
+        await query(
+          `UPDATE trading_accounts 
+           SET investor_notes = $1, updated_at = $2
+           WHERE id = $3`,
+          [serializedNotes, now, accountId]
+        );
+      }
+    } else {
+      const record2 = inMemoryDb.tradingAccounts.get(accountId);
+      if (record2) {
+        record2.balance = newBalance;
+        record2.updated_at = now;
+        record2.investor_notes = this.serializeMetadata(record2);
+      }
+    }
+    return account;
+  }
+  /**
+   * Helper to fetch an account record without ownership checks (for admin & internal service operations)
+   */
+  static async findRawAccount(accountId) {
+    const pool2 = getPool();
+    if (pool2) {
+      const rows = await query(
+        `SELECT * FROM trading_accounts WHERE id = $1`,
+        [accountId]
+      );
+      return rows[0] ? this.hydrateAccountRecord(rows[0]) : null;
+    }
+    const record2 = inMemoryDb.tradingAccounts.get(accountId);
+    return record2 ? this.hydrateAccountRecord(record2) : null;
+  }
+  /**
+   * Admin-only trading account deletion or archiving.
+   * Checks for ownership, pending transfers, active balance, and financial history.
+   * If the trading account has financial transfer history, it is archived to preserve
+   * immutable ledger records for regulatory compliance.
+   * If it has no financial history, it is cleanly deleted.
+   */
+  static async deleteAccountAdmin(adminUserId, accountId, ip, userAgent) {
+    const pool2 = getPool();
+    if (pool2) {
+      const accRows = await query(`SELECT * FROM trading_accounts WHERE id = $1`, [accountId]);
+      if (accRows.length === 0) {
+        const err = new Error("Trading account not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      const rawAccount = accRows[0];
+      const account = this.hydrateAccountRecord(rawAccount);
+      const pendingTransfers = await query(
+        `SELECT id FROM account_transfers WHERE trading_account_id = $1 AND status = 'pending'`,
+        [accountId]
+      );
+      if (pendingTransfers.length > 0) {
+        const err = new Error("Cannot delete trading account with pending transfer requests. Please approve or reject pending transfers first.");
+        err.statusCode = 400;
+        throw err;
+      }
+      if (!account.is_demo && parseFloat(account.balance || "0") > 0) {
+        const err = new Error(`Cannot delete trading account with active balance (${account.balance} ${account.currency}). Transfer or settle balance first.`);
+        err.statusCode = 400;
+        throw err;
+      }
+      const transferCountRows = await query(
+        `SELECT COUNT(*) as count FROM account_transfers WHERE trading_account_id = $1`,
+        [accountId]
+      );
+      const transferCount = parseInt(transferCountRows[0]?.count || "0", 10);
+      if (transferCount > 0) {
+        const now = /* @__PURE__ */ new Date();
+        const meta3 = this.parseMetadata(rawAccount);
+        meta3.archived_at = now.toISOString();
+        meta3.archived_by = adminUserId;
+        meta3.archive_reason = "Archived via admin delete workflow to retain transfer history";
+        const serialized = this.serializeMetadata(meta3);
+        await query(
+          `UPDATE trading_accounts SET status = 'archived', investor_notes = $1, updated_at = $2 WHERE id = $3`,
+          [serialized, now, accountId]
+        );
+        await this.recordAuditLog(
+          adminUserId,
+          "TRADING_ACCOUNT_ARCHIVED",
+          accountId,
+          {
+            account_id: accountId,
+            account_number: account.account_number,
+            user_id: account.user_id,
+            transfer_count_retained: transferCount,
+            reason: "Account archived to preserve financial transfer ledger history"
+          },
+          ip,
+          userAgent
+        );
+        return {
+          success: true,
+          action: "archived",
+          message: "Trading account archived. Financial transfer history has been preserved for regulatory compliance.",
+          account_id: accountId
+        };
+      } else {
+        await query(`DELETE FROM trading_password_resets WHERE trading_account_id = $1`, [accountId]);
+        await query(`DELETE FROM trading_accounts WHERE id = $1`, [accountId]);
+        await this.recordAuditLog(
+          adminUserId,
+          "TRADING_ACCOUNT_DELETED",
+          accountId,
+          {
+            account_id: accountId,
+            account_number: account.account_number,
+            user_id: account.user_id,
+            reason: "Trading account deleted with zero prior transfer history"
+          },
+          ip,
+          userAgent
+        );
+        return {
+          success: true,
+          action: "deleted",
+          message: "Trading account deleted successfully.",
+          account_id: accountId
+        };
+      }
+    } else {
+      const record2 = inMemoryDb.tradingAccounts.get(accountId);
+      if (!record2) {
+        const err = new Error("Trading account not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      const account = this.hydrateAccountRecord(record2);
+      const pendingTransfers = Array.from(inMemoryDb.accountTransfers.values()).filter(
+        (tr) => tr.trading_account_id === accountId && tr.status === "pending"
+      );
+      if (pendingTransfers.length > 0) {
+        const err = new Error("Cannot delete trading account with pending transfer requests. Please approve or reject pending transfers first.");
+        err.statusCode = 400;
+        throw err;
+      }
+      if (!account.is_demo && parseFloat(account.balance || "0") > 0) {
+        const err = new Error(`Cannot delete trading account with active balance (${account.balance} ${account.currency}). Transfer or settle balance first.`);
+        err.statusCode = 400;
+        throw err;
+      }
+      const transferCount = Array.from(inMemoryDb.accountTransfers.values()).filter(
+        (tr) => tr.trading_account_id === accountId
+      ).length;
+      if (transferCount > 0) {
+        record2.status = "archived";
+        record2.updated_at = /* @__PURE__ */ new Date();
+        const meta3 = this.parseMetadata(record2);
+        meta3.archived_at = (/* @__PURE__ */ new Date()).toISOString();
+        meta3.archived_by = adminUserId;
+        meta3.archive_reason = "Archived via admin delete workflow to retain transfer history";
+        record2.investor_notes = this.serializeMetadata(meta3);
+        await this.recordAuditLog(
+          adminUserId,
+          "TRADING_ACCOUNT_ARCHIVED",
+          accountId,
+          {
+            account_id: accountId,
+            account_number: account.account_number,
+            user_id: account.user_id,
+            transfer_count_retained: transferCount,
+            reason: "Account archived to preserve financial transfer ledger history"
+          },
+          ip,
+          userAgent
+        );
+        return {
+          success: true,
+          action: "archived",
+          message: "Trading account archived. Financial transfer history has been preserved for regulatory compliance.",
+          account_id: accountId
+        };
+      } else {
+        for (const [id, r5] of inMemoryDb.tradingPasswordResets.entries()) {
+          if (r5.trading_account_id === accountId) inMemoryDb.tradingPasswordResets.delete(id);
+        }
+        inMemoryDb.tradingAccounts.delete(accountId);
+        await this.recordAuditLog(
+          adminUserId,
+          "TRADING_ACCOUNT_DELETED",
+          accountId,
+          {
+            account_id: accountId,
+            account_number: account.account_number,
+            user_id: account.user_id,
+            reason: "Trading account deleted with zero prior transfer history"
+          },
+          ip,
+          userAgent
+        );
+        return {
+          success: true,
+          action: "deleted",
+          message: "Trading account deleted successfully.",
+          account_id: accountId
+        };
+      }
+    }
+  }
+  /**
+   * Admin-only assignment / mapping of a trading account to a client.
+   * Verifies target client exists and is a client, updates user_id mapping,
+   * and records an audit log.
+   */
+  static async assignAccountToClientAdmin(adminUserId, accountId, targetClientId, ip, userAgent) {
+    const pool2 = getPool();
+    let previousUserId = "";
+    let accountNum = "";
+    if (pool2) {
+      const clientRows = await query(`SELECT id, role, email FROM users WHERE id = $1`, [targetClientId]);
+      if (clientRows.length === 0 || clientRows[0].role !== "client") {
+        const err = new Error("Target client account not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      const accRows = await query(`SELECT * FROM trading_accounts WHERE id = $1`, [accountId]);
+      if (accRows.length === 0) {
+        const err = new Error("Trading account not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      previousUserId = accRows[0].user_id;
+      accountNum = accRows[0].account_number;
+      await query(
+        `UPDATE trading_accounts SET user_id = $1, updated_at = NOW() WHERE id = $2`,
+        [targetClientId, accountId]
+      );
+    } else {
+      const targetUser = Array.from(inMemoryDb.users.values()).find((u) => u.id === targetClientId);
+      if (!targetUser || targetUser.role !== "client") {
+        const err = new Error("Target client account not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      const record2 = inMemoryDb.tradingAccounts.get(accountId);
+      if (!record2) {
+        const err = new Error("Trading account not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      previousUserId = record2.user_id;
+      accountNum = record2.account_number;
+      record2.user_id = targetClientId;
+      record2.updated_at = /* @__PURE__ */ new Date();
+    }
+    await this.recordAuditLog(
+      adminUserId,
+      "TRADING_ACCOUNT_ASSIGNED",
+      accountId,
+      {
+        account_id: accountId,
+        account_number: accountNum,
+        previous_user_id: previousUserId,
+        new_user_id: targetClientId
+      },
+      ip,
+      userAgent
+    );
+    const updated = await this.getAccountByIdAdmin(accountId);
+    return updated;
+  }
+  /**
+   * Client-side trading password reset REQUEST workflow.
+   * Strict IDOR protection: verified against requesting user's account.
+   * Does NOT change password automatically; creates a pending request for admin review.
+   */
+  static async requestPasswordReset(userId, accountId, reason, ip, userAgent) {
+    const account = await this.getUserAccountById(userId, accountId);
+    if (!account) {
+      const err = new Error("Trading account not found");
+      err.statusCode = 404;
+      throw err;
+    }
+    if (account.status === "archived" || account.status === "disabled") {
+      const err = new Error(`Cannot request password reset for account with status '${account.status}'.`);
+      err.statusCode = 400;
+      throw err;
+    }
+    const pool2 = getPool();
+    const requestId = crypto9.randomUUID();
+    const now = /* @__PURE__ */ new Date();
+    if (pool2) {
+      const existingPending = await query(
+        `SELECT id FROM trading_password_resets WHERE trading_account_id = $1 AND status = 'pending'`,
+        [accountId]
+      );
+      if (existingPending.length > 0) {
+        const err = new Error("A password reset request for this trading account is already pending administrative review.");
+        err.statusCode = 400;
+        throw err;
+      }
+      const rows = await query(
+        `INSERT INTO trading_password_resets (id, trading_account_id, user_id, account_number, status, reason, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'pending', $5, $6, $6)
+         RETURNING *`,
+        [requestId, accountId, userId, account.account_number, reason?.trim() || null, now]
+      );
+      await this.recordAuditLog(
+        userId,
+        "TRADING_PASSWORD_RESET_REQUESTED",
+        accountId,
+        {
+          request_id: requestId,
+          account_id: accountId,
+          account_number: account.account_number,
+          reason: reason?.trim() || null
+        },
+        ip,
+        userAgent
+      );
+      await NotificationService.createNotification(
+        userId,
+        "Trading Password Reset Requested",
+        `Your password reset request for trading account #${account.account_number} has been submitted and is pending administrative review.`,
+        "trading_account",
+        { account_id: accountId, request_id: requestId }
+      );
+      return rows[0];
+    } else {
+      const existingPending = Array.from(inMemoryDb.tradingPasswordResets.values()).find(
+        (r5) => r5.trading_account_id === accountId && r5.status === "pending"
+      );
+      if (existingPending) {
+        const err = new Error("A password reset request for this trading account is already pending administrative review.");
+        err.statusCode = 400;
+        throw err;
+      }
+      const record2 = {
+        id: requestId,
+        trading_account_id: accountId,
+        user_id: userId,
+        account_number: account.account_number,
+        status: "pending",
+        reason: reason?.trim() || null,
+        admin_notes: null,
+        processed_by: null,
+        processed_at: null,
+        created_at: now,
+        updated_at: now
+      };
+      inMemoryDb.tradingPasswordResets.set(requestId, record2);
+      await this.recordAuditLog(
+        userId,
+        "TRADING_PASSWORD_RESET_REQUESTED",
+        accountId,
+        {
+          request_id: requestId,
+          account_id: accountId,
+          account_number: account.account_number,
+          reason: reason?.trim() || null
+        },
+        ip,
+        userAgent
+      );
+      await NotificationService.createNotification(
+        userId,
+        "Trading Password Reset Requested",
+        `Your password reset request for trading account #${account.account_number} has been submitted and is pending administrative review.`,
+        "trading_account",
+        { account_id: accountId, request_id: requestId }
+      );
+      return record2;
+    }
+  }
+  /**
+   * Client: List own trading account password reset requests
+   */
+  static async getUserPasswordResets(userId) {
+    const pool2 = getPool();
+    if (pool2) {
+      const rows = await query(
+        `SELECT * FROM trading_password_resets WHERE user_id = $1 ORDER BY created_at DESC`,
+        [userId]
+      );
+      return rows;
+    } else {
+      return Array.from(inMemoryDb.tradingPasswordResets.values()).filter((r5) => r5.user_id === userId).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime());
+    }
+  }
+  /**
+   * Admin: List all password reset requests with user and account metadata
+   */
+  static async getAllPasswordResetsAdmin(filters) {
+    const pool2 = getPool();
+    if (pool2) {
+      let sql = `
+        SELECT r.*,
+               u.first_name as client_first_name, u.last_name as client_last_name, u.email as client_email,
+               ta.platform, ta.server_name, ta.is_demo, ta.currency, ta.balance
+        FROM trading_password_resets r
+        JOIN users u ON u.id = r.user_id
+        LEFT JOIN trading_accounts ta ON ta.id = r.trading_account_id
+        WHERE 1=1
+      `;
+      const params = [];
+      if (filters?.status) {
+        params.push(filters.status);
+        sql += ` AND r.status = $${params.length}`;
+      }
+      if (filters?.search) {
+        params.push(`%${filters.search.toLowerCase()}%`);
+        sql += ` AND (LOWER(r.account_number) LIKE $${params.length} OR LOWER(u.email) LIKE $${params.length} OR LOWER(u.first_name) LIKE $${params.length} OR LOWER(u.last_name) LIKE $${params.length})`;
+      }
+      sql += ` ORDER BY r.created_at DESC`;
+      return await query(sql, params);
+    } else {
+      let list2 = Array.from(inMemoryDb.tradingPasswordResets.values());
+      if (filters?.status) {
+        list2 = list2.filter((r5) => r5.status === filters.status);
+      }
+      if (filters?.search) {
+        const s2 = filters.search.toLowerCase();
+        list2 = list2.filter((r5) => {
+          const user = Array.from(inMemoryDb.users.values()).find((u) => u.id === r5.user_id);
+          return r5.account_number.toLowerCase().includes(s2) || user && (user.email.toLowerCase().includes(s2) || user.first_name.toLowerCase().includes(s2) || user.last_name.toLowerCase().includes(s2));
+        });
+      }
+      return list2.map((r5) => {
+        const user = Array.from(inMemoryDb.users.values()).find((u) => u.id === r5.user_id);
+        const ta = inMemoryDb.tradingAccounts.get(r5.trading_account_id);
+        return {
+          ...r5,
+          client_first_name: user?.first_name || "",
+          client_last_name: user?.last_name || "",
+          client_email: user?.email || "",
+          platform: ta?.platform || "",
+          server_name: ta?.server_name || "",
+          is_demo: ta?.is_demo || false,
+          currency: ta?.currency || "USD",
+          balance: ta?.balance || "0.00"
+        };
+      }).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime());
+    }
+  }
+  /**
+   * Admin: Process password reset request (approve or reject)
+   */
+  static async processPasswordResetAdmin(adminUserId, requestId, action, input2, ip, userAgent) {
+    const pool2 = getPool();
+    const now = /* @__PURE__ */ new Date();
+    if (pool2) {
+      const rows = await query(`SELECT * FROM trading_password_resets WHERE id = $1`, [requestId]);
+      if (rows.length === 0) {
+        const err = new Error("Password reset request not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      const resetReq = rows[0];
+      if (resetReq.status !== "pending") {
+        const err = new Error("This password reset request has already been processed");
+        err.statusCode = 400;
+        throw err;
+      }
+      const accRows = await query(`SELECT * FROM trading_accounts WHERE id = $1`, [resetReq.trading_account_id]);
+      const rawAccount = accRows[0];
+      const account = rawAccount ? this.hydrateAccountRecord(rawAccount) : null;
+      if (action === "approve") {
+        const adminNotes = input2?.admin_notes?.trim() || "Password reset approved by operations desk";
+        await query(
+          `UPDATE trading_password_resets
+           SET status = 'approved', processed_by = $1, processed_at = $2, admin_notes = $3, updated_at = $2
+           WHERE id = $4`,
+          [adminUserId, now, adminNotes, requestId]
+        );
+        if (account && account.is_demo && input2?.new_password) {
+          const meta3 = this.parseMetadata(rawAccount);
+          meta3.demo_password = input2.new_password;
+          const serialized = this.serializeMetadata(meta3);
+          await query(
+            `UPDATE trading_accounts SET investor_notes = $1, updated_at = $2 WHERE id = $3`,
+            [serialized, now, account.id]
+          );
+        }
+        await this.recordAuditLog(
+          adminUserId,
+          "TRADING_PASSWORD_RESET_APPROVED",
+          resetReq.trading_account_id,
+          {
+            request_id: requestId,
+            account_number: resetReq.account_number,
+            is_demo: account?.is_demo ?? false,
+            admin_notes: adminNotes
+          },
+          ip,
+          userAgent
+        );
+        await NotificationService.createNotification(
+          resetReq.user_id,
+          "Trading Password Reset Approved",
+          `Your password reset request for trading account #${resetReq.account_number} has been approved.${input2?.admin_notes ? ` Note: ${input2.admin_notes}` : ""}`,
+          "trading_account",
+          { account_id: resetReq.trading_account_id, request_id: requestId }
+        );
+        return {
+          success: true,
+          message: "Password reset request approved.",
+          data: { ...resetReq, status: "approved", processed_by: adminUserId, processed_at: now, admin_notes: adminNotes },
+          new_password: input2?.new_password || null
+        };
+      } else {
+        const reason = input2?.rejection_reason?.trim() || input2?.admin_notes?.trim() || "Request rejected by administrator";
+        await query(
+          `UPDATE trading_password_resets
+           SET status = 'rejected', processed_by = $1, processed_at = $2, admin_notes = $3, updated_at = $2
+           WHERE id = $4`,
+          [adminUserId, now, reason, requestId]
+        );
+        await this.recordAuditLog(
+          adminUserId,
+          "TRADING_PASSWORD_RESET_REJECTED",
+          resetReq.trading_account_id,
+          {
+            request_id: requestId,
+            account_number: resetReq.account_number,
+            rejection_reason: reason
+          },
+          ip,
+          userAgent
+        );
+        await NotificationService.createNotification(
+          resetReq.user_id,
+          "Trading Password Reset Rejected",
+          `Your password reset request for trading account #${resetReq.account_number} was rejected. Reason: ${reason}`,
+          "trading_account",
+          { account_id: resetReq.trading_account_id, request_id: requestId }
+        );
+        return {
+          success: true,
+          message: "Password reset request rejected.",
+          data: { ...resetReq, status: "rejected", processed_by: adminUserId, processed_at: now, admin_notes: reason }
+        };
+      }
+    } else {
+      const resetReq = inMemoryDb.tradingPasswordResets.get(requestId);
+      if (!resetReq) {
+        const err = new Error("Password reset request not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      if (resetReq.status !== "pending") {
+        const err = new Error("This password reset request has already been processed");
+        err.statusCode = 400;
+        throw err;
+      }
+      const rawAccount = inMemoryDb.tradingAccounts.get(resetReq.trading_account_id);
+      const account = rawAccount ? this.hydrateAccountRecord(rawAccount) : null;
+      if (action === "approve") {
+        const adminNotes = input2?.admin_notes?.trim() || "Password reset approved by operations desk";
+        resetReq.status = "approved";
+        resetReq.processed_by = adminUserId;
+        resetReq.processed_at = now;
+        resetReq.admin_notes = adminNotes;
+        resetReq.updated_at = now;
+        if (account && account.is_demo && input2?.new_password) {
+          const meta3 = this.parseMetadata(rawAccount);
+          meta3.demo_password = input2.new_password;
+          rawAccount.investor_notes = this.serializeMetadata(meta3);
+          rawAccount.updated_at = now;
+        }
+        await this.recordAuditLog(
+          adminUserId,
+          "TRADING_PASSWORD_RESET_APPROVED",
+          resetReq.trading_account_id,
+          {
+            request_id: requestId,
+            account_number: resetReq.account_number,
+            is_demo: account?.is_demo ?? false,
+            admin_notes: adminNotes
+          },
+          ip,
+          userAgent
+        );
+        await NotificationService.createNotification(
+          resetReq.user_id,
+          "Trading Password Reset Approved",
+          `Your password reset request for trading account #${resetReq.account_number} has been approved.${input2?.admin_notes ? ` Note: ${input2.admin_notes}` : ""}`,
+          "trading_account",
+          { account_id: resetReq.trading_account_id, request_id: requestId }
+        );
+        return {
+          success: true,
+          message: "Password reset request approved.",
+          data: resetReq,
+          new_password: input2?.new_password || null
+        };
+      } else {
+        const reason = input2?.rejection_reason?.trim() || input2?.admin_notes?.trim() || "Request rejected by administrator";
+        resetReq.status = "rejected";
+        resetReq.processed_by = adminUserId;
+        resetReq.processed_at = now;
+        resetReq.admin_notes = reason;
+        resetReq.updated_at = now;
+        await this.recordAuditLog(
+          adminUserId,
+          "TRADING_PASSWORD_RESET_REJECTED",
+          resetReq.trading_account_id,
+          {
+            request_id: requestId,
+            account_number: resetReq.account_number,
+            rejection_reason: reason
+          },
+          ip,
+          userAgent
+        );
+        await NotificationService.createNotification(
+          resetReq.user_id,
+          "Trading Password Reset Rejected",
+          `Your password reset request for trading account #${resetReq.account_number} was rejected. Reason: ${reason}`,
+          "trading_account",
+          { account_id: resetReq.trading_account_id, request_id: requestId }
+        );
+        return {
+          success: true,
+          message: "Password reset request rejected.",
+          data: resetReq
+        };
+      }
+    }
+  }
+};
+
+// netlify/functions/services/auth.service.ts
+var AuthService = class {
+  /**
+   * Records an audit log entry for authentication and security lifecycle events
+   */
+  static async recordAuditLog(actorId, action, entityType, entityId, details, ip, userAgent) {
+    const pool2 = getPool();
+    const now = /* @__PURE__ */ new Date();
+    const auditId = crypto10.randomUUID();
+    const sanitizedIp = ip ? String(ip).split(",")[0].trim().substring(0, 100) : null;
+    const sanitizedUserAgent = userAgent ? String(userAgent).substring(0, 500) : null;
+    if (pool2) {
+      await query(
+        `INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, ip_address, user_agent, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [auditId, actorId, action, entityType, entityId, JSON.stringify(details), sanitizedIp, sanitizedUserAgent, now]
+      );
+    } else {
+      const record2 = {
+        id: auditId,
+        actor_id: actorId,
+        action,
+        entity_type: entityType,
+        entity_id: entityId,
+        details,
+        ip_address: sanitizedIp,
+        user_agent: sanitizedUserAgent,
+        created_at: now
+      };
+      inMemoryDb.auditLogs.unshift(record2);
+    }
+  }
+  /**
+   * Register a new user with standard 'client' role and password hashing
+   */
+  static async register(input2, ip, userAgent) {
+    const emailNormalized = input2.email.toLowerCase();
+    if (getPool()) {
+      const existing = await query("SELECT id FROM users WHERE email = $1", [emailNormalized]);
+      if (existing.length > 0) {
+        throw new Error("An account with this email already exists");
+      }
+    } else {
+      if (inMemoryDb.users.has(emailNormalized)) {
+        throw new Error("An account with this email already exists");
+      }
+    }
+    const passwordHash = await bcryptjs_default.hash(input2.password, 10);
+    const userId = crypto10.randomUUID();
+    const now = /* @__PURE__ */ new Date();
+    const newUser = {
+      id: userId,
+      email: emailNormalized,
+      password_hash: passwordHash,
+      role: "client",
+      status: "active",
+      first_name: input2.first_name,
+      last_name: input2.last_name,
+      country: input2.country || "US",
+      phone: input2.phone || null,
+      preferred_currency: input2.preferred_currency || "USD",
+      created_at: now,
+      updated_at: now
+    };
+    if (getPool()) {
+      await query(
+        `INSERT INTO users (id, email, password_hash, role, status, first_name, last_name, country, phone, preferred_currency, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [
+          newUser.id,
+          newUser.email,
+          newUser.password_hash,
+          newUser.role,
+          newUser.status,
+          newUser.first_name,
+          newUser.last_name,
+          newUser.country,
+          newUser.phone,
+          newUser.preferred_currency,
+          newUser.created_at,
+          newUser.updated_at
+        ]
+      );
+      await query(
+        `INSERT INTO wallets (id, user_id, currency, balance, reserved_balance, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [crypto10.randomUUID(), newUser.id, newUser.preferred_currency, "0.00", "0.00", now, now]
+      );
+    } else {
+      inMemoryDb.users.set(emailNormalized, newUser);
+      const userWallet = {
+        id: crypto10.randomUUID(),
+        user_id: newUser.id,
+        currency: newUser.preferred_currency,
+        balance: "0.00",
+        reserved_balance: "0.00",
+        created_at: now,
+        updated_at: now
+      };
+      inMemoryDb.wallets.set(userWallet.id, userWallet);
+      inMemoryDb.wallets.set(`${userWallet.user_id}_${userWallet.currency}`, userWallet);
+    }
+    if (newUser.role === "client") {
+      try {
+        await TradingAccountService.provisionDefaultDemoAccount(
+          newUser.id,
+          newUser.preferred_currency || "USD",
+          ip,
+          userAgent
+        );
+      } catch (demoErr) {
+        console.error("Failed to auto-provision default demo account during client registration:", demoErr);
+      }
+    }
+    const token = generateToken(newUser);
+    await this.recordAuditLog(
+      newUser.id,
+      "USER_REGISTERED",
+      "user",
+      newUser.id,
+      {
+        email: newUser.email,
+        role: newUser.role,
+        country: newUser.country,
+        preferred_currency: newUser.preferred_currency
+      },
+      ip,
+      userAgent
+    );
+    return {
+      token,
+      user: {
+        id: newUser.id,
+        email: newUser.email,
+        role: newUser.role,
+        status: newUser.status,
+        first_name: newUser.first_name,
+        last_name: newUser.last_name,
+        preferred_currency: newUser.preferred_currency
+      }
+    };
+  }
+  /**
+   * Authenticate user with password comparison and generate token
+   */
+  static async login(input2, ip, userAgent) {
+    const emailNormalized = input2.email.toLowerCase();
+    let user = null;
+    if (getPool()) {
+      const rows = await query("SELECT * FROM users WHERE email = $1", [emailNormalized]);
+      user = rows[0] || null;
+    } else {
+      user = inMemoryDb.users.get(emailNormalized) || null;
+    }
+    if (!user) {
+      throw new Error("Invalid email or password");
+    }
+    if (user.status !== "active") {
+      throw new Error(`Your account is currently ${user.status}. Please contact support.`);
+    }
+    const isValid = await bcryptjs_default.compare(input2.password, user.password_hash);
+    if (!isValid) {
+      throw new Error("Invalid email or password");
+    }
+    const now = /* @__PURE__ */ new Date();
+    user.last_login_at = now;
+    if (getPool()) {
+      await query("UPDATE users SET last_login_at = $1 WHERE id = $2", [now, user.id]);
+    }
+    const token = generateToken(user);
+    await this.recordAuditLog(
+      user.id,
+      "USER_LOGIN",
+      "user",
+      user.id,
+      {
+        email: user.email,
+        role: user.role
+      },
+      ip,
+      userAgent
+    );
+    return {
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+        first_name: user.first_name,
+        last_name: user.last_name,
+        preferred_currency: user.preferred_currency
+      }
+    };
+  }
+  /**
+   * Request a password reset token
+   */
+  static async forgotPassword(input2, ip, userAgent) {
+    const emailNormalized = input2.email.toLowerCase();
+    let userExists = false;
+    if (getPool()) {
+      const rows = await query("SELECT id FROM users WHERE email = $1", [emailNormalized]);
+      userExists = rows.length > 0;
+    } else {
+      userExists = inMemoryDb.users.has(emailNormalized);
+    }
+    await this.recordAuditLog(
+      null,
+      "PASSWORD_RESET_REQUESTED",
+      "user",
+      null,
+      { email: emailNormalized, user_exists: userExists },
+      ip,
+      userAgent
+    );
+    if (!userExists) {
+      return {
+        message: "If an account exists with that email, a password reset link has been dispatched."
+      };
+    }
+    if (getPool()) {
+      await query("UPDATE password_resets SET used_at = NOW() WHERE email = $1 AND used_at IS NULL", [emailNormalized]);
+    } else {
+      for (const rec of inMemoryDb.passwordResets.values()) {
+        if (rec.email === emailNormalized && !rec.used_at) {
+          rec.used_at = /* @__PURE__ */ new Date();
+        }
+      }
+    }
+    const rawToken = crypto10.randomBytes(32).toString("hex");
+    const tokenHash = crypto10.createHash("sha256").update(rawToken).digest("hex");
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1e3);
+    const resetRecord = {
+      id: crypto10.randomUUID(),
+      email: emailNormalized,
+      token_hash: tokenHash,
+      expires_at: expiresAt,
+      created_at: /* @__PURE__ */ new Date()
+    };
+    if (getPool()) {
+      await query(
+        `INSERT INTO password_resets (id, email, token_hash, expires_at, created_at)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [resetRecord.id, resetRecord.email, resetRecord.token_hash, resetRecord.expires_at, resetRecord.created_at]
+      );
+    } else {
+      inMemoryDb.passwordResets.set(tokenHash, resetRecord);
+    }
+    await MailService.sendPasswordResetEmail(emailNormalized, rawToken);
+    return {
+      message: "If an account exists with that email, a password reset link has been dispatched."
+    };
+  }
+  /**
+   * Complete password reset using valid unexpired token
+   */
+  static async resetPassword(input2, ip, userAgent) {
+    if (!input2.token || input2.token.trim() === "") {
+      throw new Error("Invalid or expired password reset token");
+    }
+    const tokenHash = crypto10.createHash("sha256").update(input2.token.trim()).digest("hex");
+    let email3 = null;
+    let resetId = null;
+    if (getPool()) {
+      const rows = await query(
+        "SELECT * FROM password_resets WHERE token_hash = $1 AND expires_at > NOW() AND used_at IS NULL",
+        [tokenHash]
+      );
+      if (rows.length > 0) {
+        email3 = rows[0].email;
+        resetId = rows[0].id;
+      }
+    } else {
+      const record2 = inMemoryDb.passwordResets.get(tokenHash);
+      if (record2 && record2.expires_at > /* @__PURE__ */ new Date() && !record2.used_at) {
+        email3 = record2.email;
+        resetId = record2.id;
+      }
+    }
+    if (!email3 || !resetId) {
+      throw new Error("Invalid or expired password reset token");
+    }
+    const newPasswordHash = await bcryptjs_default.hash(input2.password, 10);
+    const now = /* @__PURE__ */ new Date();
+    if (getPool()) {
+      await query("UPDATE users SET password_hash = $1, updated_at = $2 WHERE email = $3", [
+        newPasswordHash,
+        now,
+        email3
+      ]);
+      await query("UPDATE password_resets SET used_at = $1 WHERE id = $2", [now, resetId]);
+      await query("UPDATE password_resets SET used_at = $1 WHERE email = $2 AND used_at IS NULL", [now, email3]);
+    } else {
+      const user = inMemoryDb.users.get(email3);
+      if (user) {
+        user.password_hash = newPasswordHash;
+        user.updated_at = now;
+      }
+      const record2 = inMemoryDb.passwordResets.get(tokenHash);
+      if (record2) {
+        record2.used_at = now;
+      }
+      for (const rec of inMemoryDb.passwordResets.values()) {
+        if (rec.email === email3 && !rec.used_at) {
+          rec.used_at = now;
+        }
+      }
+    }
+    let targetUserId = null;
+    if (getPool()) {
+      const userRows = await query("SELECT id FROM users WHERE email = $1", [email3]);
+      targetUserId = userRows[0]?.id || null;
+    } else {
+      const u = inMemoryDb.users.get(email3);
+      targetUserId = u ? u.id : null;
+    }
+    await this.recordAuditLog(
+      targetUserId,
+      "PASSWORD_RESET_COMPLETED",
+      "user",
+      targetUserId,
+      { email: email3 },
+      ip,
+      userAgent
+    );
+    return {
+      message: "Your password has been successfully updated. You may now log in."
+    };
+  }
+  /**
+   * Internal / Admin-Only Direct Password Reset (CLI / Emergency Recovery)
+   * Strictly verifies that the target account exists and has role = 'admin'.
+   * Never exposes plaintext password or password hash in return values or audit logs.
+   */
+  static async resetAdminPasswordDirect(adminEmail, newPasswordPlaintext, actorIdentifier = "cli_admin_recovery") {
+    const emailNormalized = adminEmail.trim().toLowerCase();
+    if (!newPasswordPlaintext || newPasswordPlaintext.length < 8 || !/[A-Z]/.test(newPasswordPlaintext) || !/[a-z]/.test(newPasswordPlaintext) || !/[0-9]/.test(newPasswordPlaintext) || !/[^A-Za-z0-9]/.test(newPasswordPlaintext)) {
+      throw new Error(
+        "Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, one number, and one special character."
+      );
+    }
+    let adminUser = null;
+    if (getPool()) {
+      const rows = await query(
+        "SELECT id, email, role, status, first_name, last_name FROM users WHERE email = $1 AND role = 'admin'",
+        [emailNormalized]
+      );
+      adminUser = rows[0] || null;
+    } else {
+      const user = inMemoryDb.users.get(emailNormalized);
+      if (user && user.role === "admin") {
+        adminUser = user;
+      }
+    }
+    if (!adminUser) {
+      throw new Error(`Admin user with email "${emailNormalized}" not found or does not have role="admin".`);
+    }
+    const newPasswordHash = await bcryptjs_default.hash(newPasswordPlaintext, 10);
+    const now = /* @__PURE__ */ new Date();
+    if (getPool()) {
+      await query(
+        "UPDATE users SET password_hash = $1, updated_at = $2 WHERE id = $3 AND role = 'admin'",
+        [newPasswordHash, now, adminUser.id]
+      );
+    } else {
+      const user = inMemoryDb.users.get(emailNormalized);
+      if (user) {
+        user.password_hash = newPasswordHash;
+        user.updated_at = now;
+      }
+    }
+    if (getPool()) {
+      await query("UPDATE password_resets SET used_at = $1 WHERE email = $2 AND used_at IS NULL", [
+        now,
+        emailNormalized
+      ]);
+    } else {
+      for (const rec of inMemoryDb.passwordResets.values()) {
+        if (rec.email === emailNormalized && !rec.used_at) {
+          rec.used_at = now;
+        }
+      }
+    }
+    await this.recordAuditLog(
+      adminUser.id,
+      "ADMIN_PASSWORD_RESET_DIRECT",
+      "user",
+      adminUser.id,
+      {
+        email: emailNormalized,
+        action: "direct_admin_password_recovery",
+        actor: actorIdentifier
+      },
+      "127.0.0.1",
+      "CLI Recovery Utility"
+    );
+    return {
+      success: true,
+      userId: adminUser.id,
+      email: emailNormalized
+    };
+  }
+  /**
+   * Internal / Admin-Only list of admin accounts (CLI utility use only)
+   * Never exposes passwords, hashes, or sensitive tokens.
+   */
+  static async listAdminAccounts() {
+    if (getPool()) {
+      return await query(
+        "SELECT id, email, status, created_at FROM users WHERE role = 'admin' ORDER BY created_at ASC"
+      );
+    } else {
+      return Array.from(inMemoryDb.users.values()).filter((u) => u.role === "admin").map((u) => ({ id: u.id, email: u.email, status: u.status, created_at: u.created_at }));
+    }
+  }
+  /**
+   * Check if at least one administrator account exists in the system
+   */
+  static async hasAdmin() {
+    if (getPool()) {
+      const admins = await query("SELECT id FROM users WHERE role = 'admin' LIMIT 1");
+      return admins.length > 0;
+    } else {
+      const admins = Array.from(inMemoryDb.users.values()).filter((u) => u.role === "admin");
+      return admins.length > 0;
+    }
+  }
+  /**
+   * Explicit Initial Admin Setup
+   * Only allowed when zero admin accounts exist in the system (initial bootstrap).
+   * Enforces environment-variable-based setup secret (ADMIN_SETUP_SECRET) in production.
+   */
+  static async setupAdmin(input2, providedSecret, ip, userAgent) {
+    const configuredSecret = process.env.ADMIN_SETUP_SECRET;
+    const isProd = DatabaseGuard.isProduction();
+    if (isProd && (!configuredSecret || configuredSecret.trim() === "")) {
+      throw new Error(
+        "Public initial admin setup is disabled in production. Configure ADMIN_SETUP_SECRET in environment variables or use a secure CLI setup script."
+      );
+    }
+    if (configuredSecret && configuredSecret.trim() !== "") {
+      if (!providedSecret || providedSecret.trim() !== configuredSecret.trim()) {
+        throw new Error("Invalid or missing administrator setup secret");
+      }
+    }
+    const adminExists = await this.hasAdmin();
+    if (adminExists) {
+      throw new Error("An administrator account has already been initialized. Administrator setup is permanently closed.");
+    }
+    const emailNormalized = input2.email.toLowerCase();
+    const passwordHash = await bcryptjs_default.hash(input2.password, 10);
+    const adminId = crypto10.randomUUID();
+    const now = /* @__PURE__ */ new Date();
+    const newAdmin = {
+      id: adminId,
+      email: emailNormalized,
+      password_hash: passwordHash,
+      role: "admin",
+      status: "active",
+      first_name: input2.first_name || "System",
+      last_name: input2.last_name || "Administrator",
+      country: input2.country || "US",
+      phone: input2.phone || null,
+      preferred_currency: input2.preferred_currency || "USD",
+      email_verified_at: now,
+      created_at: now,
+      updated_at: now
+    };
+    if (getPool()) {
+      await query(
+        `INSERT INTO users (id, email, password_hash, role, status, first_name, last_name, country, phone, preferred_currency, email_verified_at, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+        [
+          newAdmin.id,
+          newAdmin.email,
+          newAdmin.password_hash,
+          newAdmin.role,
+          newAdmin.status,
+          newAdmin.first_name,
+          newAdmin.last_name,
+          newAdmin.country,
+          newAdmin.phone,
+          newAdmin.preferred_currency,
+          newAdmin.email_verified_at,
+          newAdmin.created_at,
+          newAdmin.updated_at
+        ]
+      );
+    } else {
+      inMemoryDb.users.set(emailNormalized, newAdmin);
+    }
+    const token = generateToken(newAdmin);
+    await this.recordAuditLog(
+      newAdmin.id,
+      "ADMIN_INITIALIZED",
+      "user",
+      newAdmin.id,
+      {
+        email: newAdmin.email,
+        role: newAdmin.role
+      },
+      ip,
+      userAgent
+    );
+    return {
+      token,
+      user: {
+        id: newAdmin.id,
+        email: newAdmin.email,
+        role: newAdmin.role,
+        status: newAdmin.status,
+        first_name: newAdmin.first_name,
+        last_name: newAdmin.last_name,
+        preferred_currency: newAdmin.preferred_currency
+      }
+    };
+  }
+  static {
+    // =========================================================================
+    // BROKER BACK OFFICE: OPERATIONS DASHBOARD & CLIENT INSPECTOR METHODS
+    // =========================================================================
+    this.defaultBrokerSettings = {
+      broker_name: "ForexCore Broker",
+      legal_entity_name: "ForexCore Financial Services Ltd",
+      support_email: "support@forexcore.com",
+      contact_phone: "+44 20 7946 0912",
+      default_currency: "USD",
+      default_leverage: "1:100",
+      max_leverage: "1:500",
+      accent_color: "#8b5cf6",
+      allowed_registrations: true,
+      kyc_required_for_withdrawals: true,
+      updated_at: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  }
+  static async getBrokerSettings() {
+    const pool2 = getPool();
+    if (pool2) {
+      try {
+        const rows = await query(
+          `SELECT value, updated_at FROM system_settings WHERE key = 'broker_settings'`
+        );
+        if (rows.length > 0 && rows[0].value) {
+          return {
+            ...this.defaultBrokerSettings,
+            ...rows[0].value,
+            updated_at: rows[0].updated_at ? new Date(rows[0].updated_at).toISOString() : (/* @__PURE__ */ new Date()).toISOString()
+          };
+        }
+      } catch (err) {
+        console.warn("[BROKER_SETTINGS] Notice: Could not read persistent broker settings, using defaults:", err?.message || err);
+      }
+      return { ...this.defaultBrokerSettings };
+    } else {
+      const stored = inMemoryDb.systemSettings.get("broker_settings");
+      if (stored) {
+        return { ...this.defaultBrokerSettings, ...stored };
+      }
+      return { ...this.defaultBrokerSettings };
+    }
+  }
+  static async updateBrokerSettings(newSettings, adminUserId, ip, userAgent) {
+    const currentSettings = await this.getBrokerSettings();
+    const updatedSettings = {
+      ...currentSettings,
+      ...newSettings,
+      updated_at: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    const pool2 = getPool();
+    if (pool2) {
+      await query(
+        `INSERT INTO system_settings (key, value, updated_at)
+         VALUES ('broker_settings', $1, NOW())
+         ON CONFLICT (key) DO UPDATE
+         SET value = EXCLUDED.value, updated_at = NOW()`,
+        [JSON.stringify(updatedSettings)]
+      );
+    } else {
+      inMemoryDb.systemSettings.set("broker_settings", updatedSettings);
+    }
+    await this.recordAuditLog(
+      adminUserId || null,
+      "BROKER_SETTINGS_UPDATED",
+      "system_config",
+      "broker_settings",
+      { updated_fields: Object.keys(newSettings) },
+      ip,
+      userAgent
+    );
+    return updatedSettings;
+  }
+  /**
+   * Retrieve aggregate real KPIs and top urgent attention queues for Broker Back Office
+   */
+  static async getDashboardKpis() {
+    const pool2 = getPool();
+    if (pool2) {
+      const countsResult = await query(
+        `SELECT
+           (SELECT COUNT(*)::int FROM users WHERE LOWER(role) = 'client') AS total_clients,
+           (SELECT COUNT(*)::int FROM users WHERE LOWER(role) = 'client' AND status = 'active') AS active_clients,
+           (SELECT COUNT(*)::int FROM kyc_profiles WHERE status IN ('pending', 'under_review')) AS pending_kyc,
+           (SELECT COUNT(*)::int FROM deposits WHERE status = 'pending') AS pending_deposits,
+           (SELECT COUNT(*)::int FROM withdrawals WHERE status = 'pending') AS pending_withdrawals,
+           (SELECT COUNT(*)::int FROM support_tickets WHERE status IN ('open', 'in_progress')) AS open_support_tickets,
+           (SELECT COUNT(*)::int FROM trading_accounts WHERE status = 'active') AS active_trading_accounts`
+      );
+      const row = countsResult[0] || {};
+      const urgentDeposits = await query(
+        `SELECT d.id, d.reference_no, d.amount, d.currency, d.created_at, d.payment_method_name,
+                u.first_name, u.last_name, u.email
+         FROM deposits d
+         JOIN users u ON u.id = d.user_id
+         WHERE d.status = 'pending'
+         ORDER BY d.created_at ASC LIMIT 5`
+      );
+      const urgentWithdrawals = await query(
+        `SELECT w.id, w.reference_no, w.amount, w.currency, w.created_at, w.payment_method_name,
+                u.first_name, u.last_name, u.email
+         FROM withdrawals w
+         JOIN users u ON u.id = w.user_id
+         WHERE w.status = 'pending'
+         ORDER BY w.created_at ASC LIMIT 5`
+      );
+      const urgentKyc = await query(
+        `SELECT kp.id, kp.user_id, kp.first_name, kp.last_name, kp.status, kp.submitted_at,
+                u.email, u.country
+         FROM kyc_profiles kp
+         JOIN users u ON u.id = kp.user_id
+         WHERE kp.status IN ('pending', 'under_review')
+         ORDER BY kp.submitted_at ASC LIMIT 5`
+      );
+      return {
+        kpis: {
+          total_clients: Number(row.total_clients) || 0,
+          active_clients: Number(row.active_clients) || 0,
+          pending_kyc: Number(row.pending_kyc) || 0,
+          pending_deposits: Number(row.pending_deposits) || 0,
+          pending_withdrawals: Number(row.pending_withdrawals) || 0,
+          open_support_tickets: Number(row.open_support_tickets) || 0,
+          active_trading_accounts: Number(row.active_trading_accounts) || 0
+        },
+        urgent: {
+          deposits: urgentDeposits,
+          withdrawals: urgentWithdrawals,
+          kyc: urgentKyc
+        }
+      };
+    } else {
+      const allClients = Array.from(inMemoryDb.users.values()).filter(
+        (u) => (u.role || "").toLowerCase() === "client"
+      );
+      const activeClients = allClients.filter((u) => u.status === "active");
+      const pendingKyc = Array.from(inMemoryDb.kycProfiles.values()).filter(
+        (kp) => kp.status === "pending" || kp.status === "under_review"
+      );
+      const pendingDeposits = Array.from(inMemoryDb.deposits.values()).filter((d5) => d5.status === "pending");
+      const pendingWithdrawals = Array.from(inMemoryDb.withdrawals.values()).filter((w) => w.status === "pending");
+      const openSupportTickets = Array.from(inMemoryDb.supportTickets.values()).filter(
+        (st) => st.status === "open" || st.status === "in_progress"
+      );
+      const activeTradingAccounts = Array.from(inMemoryDb.tradingAccounts.values()).filter(
+        (ta) => ta.status === "active"
+      );
+      const urgentDeposits = pendingDeposits.slice(0, 5).map((d5) => {
+        const u = Array.from(inMemoryDb.users.values()).find((usr) => usr.id === d5.user_id);
+        return {
+          id: d5.id,
+          reference_no: d5.reference_no,
+          amount: d5.amount,
+          currency: d5.currency,
+          created_at: d5.created_at,
+          payment_method_name: d5.payment_method_name,
+          first_name: u?.first_name || "Client",
+          last_name: u?.last_name || "",
+          email: u?.email || ""
+        };
+      });
+      const urgentWithdrawals = pendingWithdrawals.slice(0, 5).map((w) => {
+        const u = Array.from(inMemoryDb.users.values()).find((usr) => usr.id === w.user_id);
+        return {
+          id: w.id,
+          reference_no: w.reference_no,
+          amount: w.amount,
+          currency: w.currency,
+          created_at: w.created_at,
+          payment_method_name: w.payment_method_name,
+          first_name: u?.first_name || "Client",
+          last_name: u?.last_name || "",
+          email: u?.email || ""
+        };
+      });
+      const urgentKycList = pendingKyc.slice(0, 5).map((kp) => {
+        const u = Array.from(inMemoryDb.users.values()).find((usr) => usr.id === kp.user_id);
+        return {
+          id: kp.id,
+          user_id: kp.user_id,
+          first_name: kp.first_name,
+          last_name: kp.last_name,
+          status: kp.status,
+          submitted_at: kp.submitted_at,
+          email: u?.email || "",
+          country: kp.country || u?.country || ""
+        };
+      });
+      return {
+        kpis: {
+          total_clients: allClients.length,
+          active_clients: activeClients.length,
+          pending_kyc: pendingKyc.length,
+          pending_deposits: pendingDeposits.length,
+          pending_withdrawals: pendingWithdrawals.length,
+          open_support_tickets: openSupportTickets.length,
+          active_trading_accounts: activeTradingAccounts.length
+        },
+        urgent: {
+          deposits: urgentDeposits,
+          withdrawals: urgentWithdrawals,
+          kyc: urgentKycList
+        }
+      };
+    }
+  }
+  /**
+   * List all registered client users with their KYC status, primary wallet, and trading account totals
+   */
+  static async listClients(filter) {
+    const pool2 = getPool();
+    let clients = [];
+    if (pool2) {
+      const rows = await query(
+        `SELECT
+           u.id, u.email, u.first_name, u.last_name, u.country, u.phone,
+           u.preferred_currency, u.status, u.created_at, u.last_login_at,
+           kp.status AS kyc_status,
+           w.balance AS wallet_balance,
+           w.reserved_balance AS wallet_reserved_balance,
+           (SELECT COUNT(*)::int FROM trading_accounts ta WHERE ta.user_id = u.id) AS trading_accounts_count
+         FROM users u
+         LEFT JOIN kyc_profiles kp ON kp.user_id = u.id
+         LEFT JOIN wallets w ON w.user_id = u.id
+         WHERE LOWER(u.role) = 'client'
+         ORDER BY u.created_at DESC`
+      );
+      clients = rows.map((r5) => ({
+        id: r5.id,
+        email: r5.email,
+        first_name: r5.first_name,
+        last_name: r5.last_name,
+        country: r5.country,
+        phone: r5.phone || null,
+        preferred_currency: r5.preferred_currency,
+        status: r5.status,
+        kyc_status: r5.kyc_status || "unsubmitted",
+        wallet_balance: r5.wallet_balance || "0.00",
+        wallet_reserved_balance: r5.wallet_reserved_balance || "0.00",
+        trading_accounts_count: Number(r5.trading_accounts_count) || 0,
+        created_at: r5.created_at,
+        last_login_at: r5.last_login_at
+      }));
+    } else {
+      const usersList = Array.from(inMemoryDb.users.values()).filter(
+        (u) => (u.role || "").toLowerCase() === "client"
+      );
+      clients = usersList.map((c5) => {
+        const kyc = Array.from(inMemoryDb.kycProfiles.values()).find((kp) => kp.user_id === c5.id);
+        const wallet = Array.from(inMemoryDb.wallets.values()).find((w) => w.user_id === c5.id);
+        const accountCount = Array.from(inMemoryDb.tradingAccounts.values()).filter(
+          (ta) => ta.user_id === c5.id
+        ).length;
+        return {
+          id: c5.id,
+          email: c5.email,
+          first_name: c5.first_name,
+          last_name: c5.last_name,
+          country: c5.country,
+          phone: c5.phone || null,
+          preferred_currency: c5.preferred_currency,
+          status: c5.status,
+          kyc_status: kyc ? kyc.status : "unsubmitted",
+          wallet_balance: wallet ? wallet.balance : "0.00",
+          wallet_reserved_balance: wallet ? wallet.reserved_balance : "0.00",
+          trading_accounts_count: accountCount,
+          created_at: c5.created_at,
+          last_login_at: c5.last_login_at
+        };
+      });
+    }
+    if (filter) {
+      if (filter.search && filter.search.trim() !== "") {
+        const q3 = filter.search.trim().toLowerCase();
+        clients = clients.filter(
+          (c5) => c5.id.toLowerCase().includes(q3) || c5.email.toLowerCase().includes(q3) || c5.first_name.toLowerCase().includes(q3) || c5.last_name.toLowerCase().includes(q3)
+        );
+      }
+      if (filter.status && filter.status !== "all") {
+        clients = clients.filter((c5) => c5.status === filter.status);
+      }
+      if (filter.kycStatus && filter.kycStatus !== "all") {
+        clients = clients.filter((c5) => c5.kyc_status === filter.kycStatus);
+      }
+    }
+    return clients;
+  }
+  /**
+   * 360° Client Inspector Profile
+   * Comprehensive operational view combining identity, KYC, wallet, accounts, transactions, and tickets.
+   */
+  static async getClient360(clientId) {
+    const pool2 = getPool();
+    if (pool2) {
+      const userRows = await query(
+        `SELECT id, email, first_name, last_name, country, phone, preferred_currency, status, created_at, updated_at, last_login_at
+         FROM users WHERE id = $1 AND LOWER(role) = 'client'`,
+        [clientId]
+      );
+      if (userRows.length === 0) throw new Error("Client account not found");
+      const client = userRows[0];
+      const walletRows = await query(
+        `SELECT id, currency, balance, reserved_balance, created_at, updated_at FROM wallets WHERE user_id = $1`,
+        [clientId]
+      );
+      const wallet = walletRows[0] || {
+        id: null,
+        currency: client.preferred_currency,
+        balance: "0.00",
+        reserved_balance: "0.00"
+      };
+      const tradingAccountRows = await query(
+        `SELECT * FROM trading_accounts WHERE user_id = $1 ORDER BY created_at DESC`,
+        [clientId]
+      );
+      const tradingAccounts = tradingAccountRows.map((r5) => TradingAccountService.hydrateAccountRecord(r5));
+      const kycProfileRows = await query(
+        `SELECT * FROM kyc_profiles WHERE user_id = $1`,
+        [clientId]
+      );
+      const kycProfile = kycProfileRows[0] || null;
+      const kycDocs = await query(
+        `SELECT id, document_type, original_filename, file_size, mime_type, status, rejection_reason, created_at
+         FROM kyc_documents WHERE user_id = $1 ORDER BY created_at DESC`,
+        [clientId]
+      );
+      const deposits = await query(
+        `SELECT id, reference_no, amount, currency, status, payment_method_name, created_at, approved_at, rejected_at, rejection_reason
+         FROM deposits WHERE user_id = $1 ORDER BY created_at DESC LIMIT 10`,
+        [clientId]
+      );
+      const withdrawals = await query(
+        `SELECT id, reference_no, amount, currency, status, payment_method_name, created_at, approved_at, rejected_at, rejection_reason
+         FROM withdrawals WHERE user_id = $1 ORDER BY created_at DESC LIMIT 10`,
+        [clientId]
+      );
+      const supportTickets = await query(
+        `SELECT id, ticket_no, subject, category, priority, status, created_at, last_reply_at
+         FROM support_tickets WHERE user_id = $1 ORDER BY created_at DESC LIMIT 10`,
+        [clientId]
+      );
+      const auditLogs = await query(
+        `SELECT id, action, entity_type, entity_id, details, created_at
+         FROM audit_logs WHERE (entity_type = 'user' AND entity_id = $1) OR actor_id = $1::uuid
+         ORDER BY created_at DESC LIMIT 10`,
+        [clientId]
+      );
+      return {
+        client,
+        wallet,
+        trading_accounts: tradingAccounts,
+        kyc_profile: kycProfile,
+        kyc_documents: kycDocs,
+        recent_deposits: deposits,
+        recent_withdrawals: withdrawals,
+        support_tickets: supportTickets,
+        audit_logs: auditLogs
+      };
+    } else {
+      const client = Array.from(inMemoryDb.users.values()).find(
+        (u) => u.id === clientId && (u.role || "").toLowerCase() === "client"
+      );
+      if (!client) throw new Error("Client account not found");
+      const wallet = Array.from(inMemoryDb.wallets.values()).find((w) => w.user_id === clientId) || {
+        id: null,
+        currency: client.preferred_currency,
+        balance: "0.00",
+        reserved_balance: "0.00"
+      };
+      const tradingAccounts = Array.from(inMemoryDb.tradingAccounts.values()).filter((ta) => ta.user_id === clientId).map((ta) => TradingAccountService.hydrateAccountRecord(ta)).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime());
+      const kycProfile = Array.from(inMemoryDb.kycProfiles.values()).find((kp) => kp.user_id === clientId) || null;
+      const kycDocs = Array.from(inMemoryDb.kycDocuments.values()).filter((kd) => kd.user_id === clientId).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime());
+      const deposits = Array.from(inMemoryDb.deposits.values()).filter((d5) => d5.user_id === clientId).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime()).slice(0, 10);
+      const withdrawals = Array.from(inMemoryDb.withdrawals.values()).filter((w) => w.user_id === clientId).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime()).slice(0, 10);
+      const supportTickets = Array.from(inMemoryDb.supportTickets.values()).filter((st) => st.user_id === clientId).sort((a5, b5) => new Date(b5.created_at).getTime() - new Date(a5.created_at).getTime()).slice(0, 10);
+      const auditLogs = inMemoryDb.auditLogs.filter((al) => al.entity_type === "user" && al.entity_id === clientId || al.actor_id === clientId).slice(0, 10);
+      return {
+        client: {
+          id: client.id,
+          email: client.email,
+          first_name: client.first_name,
+          last_name: client.last_name,
+          country: client.country,
+          phone: client.phone || null,
+          preferred_currency: client.preferred_currency,
+          status: client.status,
+          created_at: client.created_at,
+          updated_at: client.updated_at,
+          last_login_at: client.last_login_at
+        },
+        wallet,
+        trading_accounts: tradingAccounts,
+        kyc_profile: kycProfile,
+        kyc_documents: kycDocs,
+        recent_deposits: deposits,
+        recent_withdrawals: withdrawals,
+        support_tickets: supportTickets,
+        audit_logs: auditLogs
+      };
+    }
+  }
+  /**
+   * Admin updates client status (active, suspended, pending) with mandatory audit logging and client notification
+   */
+  static async updateClientStatus(adminUserId, clientId, status, reason, ip, userAgent) {
+    const pool2 = getPool();
+    let previousStatus = "unknown";
+    if (pool2) {
+      const existing = await query("SELECT status FROM users WHERE id = $1 AND LOWER(role) = $2", [
+        clientId,
+        "client"
+      ]);
+      if (existing.length === 0) throw new Error("Client account not found");
+      previousStatus = existing[0].status;
+      await query("UPDATE users SET status = $1, updated_at = NOW() WHERE id = $2 AND LOWER(role) = $3", [
+        status,
+        clientId,
+        "client"
+      ]);
+    } else {
+      const u = Array.from(inMemoryDb.users.values()).find(
+        (usr) => usr.id === clientId && (usr.role || "").toLowerCase() === "client"
+      );
+      if (!u) throw new Error("Client account not found");
+      previousStatus = u.status;
+      u.status = status;
+      u.updated_at = /* @__PURE__ */ new Date();
+    }
+    await this.recordAuditLog(
+      adminUserId,
+      "CLIENT_STATUS_UPDATED",
+      "user",
+      clientId,
+      {
+        previous_status: previousStatus,
+        new_status: status,
+        reason: reason || "Administrative action"
+      },
+      ip,
+      userAgent
+    );
+    await NotificationService.createNotification(
+      clientId,
+      "Account Status Updated",
+      `Your account status has been updated to ${status.toUpperCase()}.${reason ? ` Reason: ${reason}` : ""}`,
+      "system",
+      { previous_status: previousStatus, new_status: status, reason }
+    );
+    return { success: true, clientId, status, previousStatus };
+  }
+  /**
+   * Admin-only client deletion / deactivation with comprehensive foreign-key inspection and financial retention.
+   *
+   * Pre-flight checks:
+   * 1. Authorization: caller must be admin, cannot delete own account.
+   * 2. Target must exist and must be a client (cannot delete staff admins).
+   * 3. Balance verification: client must NOT have active wallet balance > 0 or reserved_balance > 0.
+   * 4. Pending financial requests: must NOT have pending deposits, withdrawals, or account transfers.
+   * 5. Financial & audit retention decision:
+   *    - If client has ANY immutable ledger transactions, completed deposits/withdrawals, or transfers:
+   *      HARD deletion would destroy required financial ledger history. Instead, the safest account
+   *      deactivation lifecycle is applied: status set to 'suspended', all trading accounts archived,
+   *      and CLIENT_DEACTIVATED_RETAINED_FOR_AUDIT recorded.
+   *    - If client has ZERO financial history (fresh account / non-transacting):
+   *      Controlled transactional deletion order is executed, leaving NO orphan records:
+   *      notifications -> support_ticket_attachments -> support_ticket_messages -> support_tickets ->
+   *      kyc_documents -> kyc_profiles -> trading_password_resets -> trading_accounts ->
+   *      wallets -> password_resets -> audit_logs (actor_id nullified) -> users.
+   *      CLIENT_DELETED is recorded in audit logs.
+   */
+  static async deleteClient(adminUserId, clientId, options, ip, userAgent) {
+    if (adminUserId === clientId) {
+      const err = new Error("Administrators cannot delete their own profile");
+      err.statusCode = 400;
+      throw err;
+    }
+    const pool2 = getPool();
+    if (pool2) {
+      const userRows = await query(
+        `SELECT id, email, first_name, last_name, role, status FROM users WHERE id = $1`,
+        [clientId]
+      );
+      if (userRows.length === 0) {
+        const err = new Error("Client account not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      const targetUser = userRows[0];
+      if (targetUser.role === "admin") {
+        const err = new Error("Cannot delete administrator accounts via client deletion workflow");
+        err.statusCode = 403;
+        throw err;
+      }
+      if (options?.confirmEmail && options.confirmEmail.trim().toLowerCase() !== targetUser.email.toLowerCase()) {
+        const err = new Error("Email confirmation does not match the client email address");
+        err.statusCode = 400;
+        throw err;
+      }
+      const walletRows = await query(
+        `SELECT balance, reserved_balance FROM wallets WHERE user_id = $1`,
+        [clientId]
+      );
+      for (const w of walletRows) {
+        const bal = parseFloat(w.balance || "0");
+        const resBal = parseFloat(w.reserved_balance || "0");
+        if (bal > 0 || resBal > 0) {
+          const err = new Error(`Cannot delete client with active wallet balance (${w.balance}). Balance must be settled or withdrawn first.`);
+          err.statusCode = 400;
+          throw err;
+        }
+      }
+      const pendingDeposits = await query(
+        `SELECT id FROM deposits WHERE user_id = $1 AND status = 'pending'`,
+        [clientId]
+      );
+      if (pendingDeposits.length > 0) {
+        const err = new Error("Cannot delete client with pending deposits. Please approve or reject pending deposits first.");
+        err.statusCode = 400;
+        throw err;
+      }
+      const pendingWithdrawals = await query(
+        `SELECT id FROM withdrawals WHERE user_id = $1 AND status = 'pending'`,
+        [clientId]
+      );
+      if (pendingWithdrawals.length > 0) {
+        const err = new Error("Cannot delete client with pending withdrawals. Please approve or reject pending withdrawals first.");
+        err.statusCode = 400;
+        throw err;
+      }
+      let pendingTransfers = [];
+      try {
+        pendingTransfers = await query(
+          `SELECT id FROM account_transfers WHERE user_id = $1 AND status = 'pending'`,
+          [clientId]
+        );
+      } catch (tableErr) {
+        if (tableErr?.code === "42P01" || tableErr?.message && tableErr.message.includes('relation "account_transfers" does not exist')) {
+          pendingTransfers = [];
+        } else {
+          throw tableErr;
+        }
+      }
+      if (pendingTransfers.length > 0) {
+        const err = new Error("Cannot delete client with pending account transfers. Please resolve transfers first.");
+        err.statusCode = 400;
+        throw err;
+      }
+      const txRows = await query(
+        `SELECT COUNT(*) as count FROM transactions WHERE user_id = $1`,
+        [clientId]
+      );
+      const txCount = parseInt(txRows[0]?.count || "0", 10);
+      const depRows = await query(
+        `SELECT COUNT(*) as count FROM deposits WHERE user_id = $1`,
+        [clientId]
+      );
+      const depCount = parseInt(depRows[0]?.count || "0", 10);
+      const wthRows = await query(
+        `SELECT COUNT(*) as count FROM withdrawals WHERE user_id = $1`,
+        [clientId]
+      );
+      const wthCount = parseInt(wthRows[0]?.count || "0", 10);
+      let trCount = 0;
+      try {
+        const trRows = await query(
+          `SELECT COUNT(*) as count FROM account_transfers WHERE user_id = $1`,
+          [clientId]
+        );
+        trCount = parseInt(trRows[0]?.count || "0", 10);
+      } catch (tableErr) {
+        if (tableErr?.code === "42P01" || tableErr?.message && tableErr.message.includes('relation "account_transfers" does not exist')) {
+          trCount = 0;
+        } else {
+          throw tableErr;
+        }
+      }
+      const hasFinancialHistory = txCount > 0 || depCount > 0 || wthCount > 0 || trCount > 0;
+      if (hasFinancialHistory) {
+        await query(
+          `UPDATE users SET status = 'suspended', updated_at = NOW() WHERE id = $1`,
+          [clientId]
+        );
+        await query(
+          `UPDATE trading_accounts SET status = 'archived', updated_at = NOW() WHERE user_id = $1`,
+          [clientId]
+        );
+        await this.recordAuditLog(
+          adminUserId,
+          "CLIENT_DEACTIVATED_RETAINED_FOR_AUDIT",
+          "user",
+          clientId,
+          {
+            target_client_id: clientId,
+            target_email: targetUser.email,
+            transactions_retained: txCount,
+            deposits_retained: depCount,
+            withdrawals_retained: wthCount,
+            transfers_retained: trCount,
+            reason: "Client deletion requested; deactivated and archived to preserve immutable financial and audit history."
+          },
+          ip,
+          userAgent
+        );
+        return {
+          success: true,
+          action: "deactivated",
+          message: "Client profile has been deactivated and trading accounts archived. Financial ledger and audit history have been retained for regulatory compliance.",
+          client_id: clientId
+        };
+      } else {
+        await query(`DELETE FROM notifications WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM support_ticket_attachments WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM support_ticket_messages WHERE sender_id = $1`, [clientId]);
+        await query(`DELETE FROM support_tickets WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM kyc_documents WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM kyc_profiles WHERE user_id = $1`, [clientId]);
+        try {
+          await query(`DELETE FROM trading_password_resets WHERE user_id = $1`, [clientId]);
+        } catch (tableErr) {
+          if (tableErr?.code !== "42P01" && !(tableErr?.message && tableErr.message.includes('relation "trading_password_resets" does not exist'))) {
+            throw tableErr;
+          }
+        }
+        await query(`DELETE FROM trading_accounts WHERE user_id = $1`, [clientId]);
+        try {
+          await query(`DELETE FROM account_transfers WHERE user_id = $1`, [clientId]);
+        } catch (tableErr) {
+          if (tableErr?.code !== "42P01" && !(tableErr?.message && tableErr.message.includes('relation "account_transfers" does not exist'))) {
+            throw tableErr;
+          }
+        }
+        await query(`DELETE FROM deposits WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM withdrawals WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM transactions WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM wallets WHERE user_id = $1`, [clientId]);
+        await query(`DELETE FROM password_resets WHERE email = $1`, [targetUser.email]);
+        await query(`UPDATE audit_logs SET actor_id = NULL WHERE actor_id = $1`, [clientId]);
+        await query(`DELETE FROM users WHERE id = $1`, [clientId]);
+        await this.recordAuditLog(
+          adminUserId,
+          "CLIENT_DELETED",
+          "user",
+          clientId,
+          {
+            deleted_client_id: clientId,
+            deleted_client_email: targetUser.email,
+            reason: "Client deleted with no prior financial history."
+          },
+          ip,
+          userAgent
+        );
+        return {
+          success: true,
+          action: "deleted",
+          message: "Client profile and associated records deleted successfully.",
+          client_id: clientId
+        };
+      }
+    } else {
+      const targetUser = Array.from(inMemoryDb.users.values()).find((u) => u.id === clientId);
+      if (!targetUser) {
+        const err = new Error("Client account not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      if (targetUser.role === "admin") {
+        const err = new Error("Cannot delete administrator accounts via client deletion workflow");
+        err.statusCode = 403;
+        throw err;
+      }
+      if (options?.confirmEmail && options.confirmEmail.trim().toLowerCase() !== targetUser.email.toLowerCase()) {
+        const err = new Error("Email confirmation does not match the client email address");
+        err.statusCode = 400;
+        throw err;
+      }
+      const clientWallets = Array.from(inMemoryDb.wallets.values()).filter((w) => w.user_id === clientId);
+      for (const w of clientWallets) {
+        const bal = parseFloat(w.balance || "0");
+        const resBal = parseFloat(w.reserved_balance || "0");
+        if (bal > 0 || resBal > 0) {
+          const err = new Error(`Cannot delete client with active wallet balance (${w.balance}). Balance must be settled or withdrawn first.`);
+          err.statusCode = 400;
+          throw err;
+        }
+      }
+      const pendingDeposits = Array.from(inMemoryDb.deposits.values()).filter((d5) => d5.user_id === clientId && d5.status === "pending");
+      if (pendingDeposits.length > 0) {
+        const err = new Error("Cannot delete client with pending deposits. Please approve or reject pending deposits first.");
+        err.statusCode = 400;
+        throw err;
+      }
+      const pendingWithdrawals = Array.from(inMemoryDb.withdrawals.values()).filter((w) => w.user_id === clientId && w.status === "pending");
+      if (pendingWithdrawals.length > 0) {
+        const err = new Error("Cannot delete client with pending withdrawals. Please approve or reject pending withdrawals first.");
+        err.statusCode = 400;
+        throw err;
+      }
+      const pendingTransfers = Array.from(inMemoryDb.accountTransfers.values()).filter((tr) => tr.user_id === clientId && tr.status === "pending");
+      if (pendingTransfers.length > 0) {
+        const err = new Error("Cannot delete client with pending account transfers. Please resolve transfers first.");
+        err.statusCode = 400;
+        throw err;
+      }
+      const txCount = inMemoryDb.transactions.filter((t) => t.user_id === clientId).length;
+      const depCount = Array.from(inMemoryDb.deposits.values()).filter((d5) => d5.user_id === clientId).length;
+      const wthCount = Array.from(inMemoryDb.withdrawals.values()).filter((w) => w.user_id === clientId).length;
+      const trCount = Array.from(inMemoryDb.accountTransfers.values()).filter((tr) => tr.user_id === clientId).length;
+      const hasFinancialHistory = txCount > 0 || depCount > 0 || wthCount > 0 || trCount > 0;
+      if (hasFinancialHistory) {
+        targetUser.status = "suspended";
+        targetUser.updated_at = /* @__PURE__ */ new Date();
+        for (const [id, acc] of inMemoryDb.tradingAccounts.entries()) {
+          if (acc.user_id === clientId) {
+            acc.status = "archived";
+            acc.updated_at = /* @__PURE__ */ new Date();
+          }
+        }
+        await this.recordAuditLog(
+          adminUserId,
+          "CLIENT_DEACTIVATED_RETAINED_FOR_AUDIT",
+          "user",
+          clientId,
+          {
+            target_client_id: clientId,
+            target_email: targetUser.email,
+            transactions_retained: txCount,
+            deposits_retained: depCount,
+            withdrawals_retained: wthCount,
+            transfers_retained: trCount,
+            reason: "Client deletion requested; deactivated and archived to preserve immutable financial and audit history."
+          },
+          ip,
+          userAgent
+        );
+        return {
+          success: true,
+          action: "deactivated",
+          message: "Client profile has been deactivated and trading accounts archived. Financial ledger and audit history have been retained for regulatory compliance.",
+          client_id: clientId
+        };
+      } else {
+        inMemoryDb.notifications = inMemoryDb.notifications.filter((n3) => n3.user_id !== clientId);
+        inMemoryDb.supportAttachments = inMemoryDb.supportAttachments.filter((a5) => a5.user_id !== clientId);
+        inMemoryDb.supportMessages = inMemoryDb.supportMessages.filter((m3) => m3.sender_id !== clientId);
+        for (const [id, t] of inMemoryDb.supportTickets.entries()) {
+          if (t.user_id === clientId) inMemoryDb.supportTickets.delete(id);
+        }
+        for (const [id, d5] of inMemoryDb.kycDocuments.entries()) {
+          if (d5.user_id === clientId) inMemoryDb.kycDocuments.delete(id);
+        }
+        for (const [id, p3] of inMemoryDb.kycProfiles.entries()) {
+          if (p3.user_id === clientId) inMemoryDb.kycProfiles.delete(id);
+        }
+        for (const [id, r5] of inMemoryDb.tradingPasswordResets.entries()) {
+          if (r5.user_id === clientId) inMemoryDb.tradingPasswordResets.delete(id);
+        }
+        for (const [id, acc] of inMemoryDb.tradingAccounts.entries()) {
+          if (acc.user_id === clientId) inMemoryDb.tradingAccounts.delete(id);
+        }
+        for (const [id, tr] of inMemoryDb.accountTransfers.entries()) {
+          if (tr.user_id === clientId) inMemoryDb.accountTransfers.delete(id);
+        }
+        for (const [id, d5] of inMemoryDb.deposits.entries()) {
+          if (d5.user_id === clientId) inMemoryDb.deposits.delete(id);
+        }
+        for (const [id, w] of inMemoryDb.withdrawals.entries()) {
+          if (w.user_id === clientId) inMemoryDb.withdrawals.delete(id);
+        }
+        inMemoryDb.transactions = inMemoryDb.transactions.filter((t) => t.user_id !== clientId);
+        for (const [k5, w] of inMemoryDb.wallets.entries()) {
+          if (w.user_id === clientId) inMemoryDb.wallets.delete(k5);
+        }
+        for (const [tok, pr] of inMemoryDb.passwordResets.entries()) {
+          if (pr.email === targetUser.email) inMemoryDb.passwordResets.delete(tok);
+        }
+        for (const al of inMemoryDb.auditLogs) {
+          if (al.actor_id === clientId) al.actor_id = null;
+        }
+        inMemoryDb.users.delete(targetUser.email.toLowerCase());
+        inMemoryDb.users.delete(clientId);
+        await this.recordAuditLog(
+          adminUserId,
+          "CLIENT_DELETED",
+          "user",
+          clientId,
+          {
+            deleted_client_id: clientId,
+            deleted_client_email: targetUser.email,
+            reason: "Client deleted with no prior financial history."
+          },
+          ip,
+          userAgent
+        );
+        return {
+          success: true,
+          action: "deleted",
+          message: "Client profile and associated records deleted successfully.",
+          client_id: clientId
+        };
+      }
+    }
+  }
+  /**
+   * Broadcast notification to all clients or send to a specific client
+   */
+  static async broadcastNotification(adminUserId, input2, ip, userAgent) {
+    const title = input2.title?.trim();
+    const message = input2.message?.trim();
+    if (!title || !message) throw new Error("Title and message are required");
+    let dispatchCount = 0;
+    const notificationType = input2.type || "system";
+    if (input2.target === "specific_user") {
+      if (!input2.user_id) throw new Error("user_id is required for specific user target");
+      await NotificationService.createNotification(
+        input2.user_id,
+        title,
+        message,
+        notificationType,
+        { broadcast_by: adminUserId }
+      );
+      dispatchCount = 1;
+    } else {
+      const clients = await this.listClients();
+      for (const client of clients) {
+        await NotificationService.createNotification(
+          client.id,
+          title,
+          message,
+          notificationType,
+          { broadcast_by: adminUserId }
+        );
+        dispatchCount++;
+      }
+    }
+    await this.recordAuditLog(
+      adminUserId,
+      "NOTIFICATION_BROADCAST_SENT",
+      "notification",
+      null,
+      {
+        title,
+        target: input2.target,
+        user_id: input2.user_id || null,
+        dispatch_count: dispatchCount
+      },
+      ip,
+      userAgent
+    );
+    return { success: true, dispatch_count: dispatchCount };
+  }
+  /**
+   * =========================================================================
+   * STAFF ADMINISTRATOR MANAGEMENT (Strict 2-Tier: client, admin)
+   * =========================================================================
+   */
+  /**
+   * List all staff administrators
+   */
+  static async listStaffAdmins() {
+    const pool2 = getPool();
+    if (pool2) {
+      const rows = await query(
+        `SELECT id, email, first_name, last_name, role, status, created_at, updated_at, last_login_at
+         FROM users
+         WHERE LOWER(role) = 'admin'
+         ORDER BY created_at ASC`
+      );
+      return rows.map((r5) => ({
+        id: r5.id,
+        email: r5.email,
+        first_name: r5.first_name,
+        last_name: r5.last_name,
+        role: "admin",
+        status: r5.status,
+        created_at: r5.created_at,
+        updated_at: r5.updated_at,
+        last_login_at: r5.last_login_at
+      }));
+    } else {
+      const admins = Array.from(inMemoryDb.users.values()).filter(
+        (u) => (u.role || "").toLowerCase() === "admin"
+      );
+      return admins.map((a5) => ({
+        id: a5.id,
+        email: a5.email,
+        first_name: a5.first_name,
+        last_name: a5.last_name,
+        role: "admin",
+        status: a5.status,
+        created_at: a5.created_at,
+        updated_at: a5.updated_at,
+        last_login_at: a5.last_login_at
+      }));
+    }
+  }
+  /**
+   * Provision a new staff administrator by an authenticated admin
+   */
+  static async createStaffAdmin(actorAdminId, payload, ip, userAgent) {
+    const emailNormalized = payload.email.trim().toLowerCase();
+    if (!emailNormalized || !payload.password) {
+      throw new Error("Email and password are required");
+    }
+    if (payload.password.length < 8) {
+      throw new Error("Password must be at least 8 characters long");
+    }
+    const pool2 = getPool();
+    if (pool2) {
+      const existing = await query("SELECT id FROM users WHERE email = $1", [emailNormalized]);
+      if (existing.length > 0) {
+        throw new Error("A user with this email already exists");
+      }
+    } else {
+      const existing = Array.from(inMemoryDb.users.values()).some(
+        (u) => u.email.toLowerCase() === emailNormalized
+      );
+      if (existing) {
+        throw new Error("A user with this email already exists");
+      }
+    }
+    const salt = await bcryptjs_default.genSalt(10);
+    const passwordHash = await bcryptjs_default.hash(payload.password, salt);
+    const newAdminId = crypto10.randomUUID();
+    const now = /* @__PURE__ */ new Date();
+    if (pool2) {
+      await query(
+        `INSERT INTO users (
+          id, email, password_hash, role, status, first_name, last_name, country, preferred_currency, email_verified_at, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [
+          newAdminId,
+          emailNormalized,
+          passwordHash,
+          "admin",
+          "active",
+          payload.first_name || "Staff",
+          payload.last_name || "Admin",
+          "US",
+          "USD",
+          now,
+          now,
+          now
+        ]
+      );
+    } else {
+      const newAdmin = {
+        id: newAdminId,
+        email: emailNormalized,
+        password_hash: passwordHash,
+        role: "admin",
+        status: "active",
+        first_name: payload.first_name || "Staff",
+        last_name: payload.last_name || "Admin",
+        country: "US",
+        preferred_currency: "USD",
+        email_verified_at: now,
+        created_at: now,
+        updated_at: now
+      };
+      inMemoryDb.users.set(newAdminId, newAdmin);
+    }
+    await this.recordAuditLog(
+      actorAdminId,
+      "STAFF_ADMIN_PROVISIONED",
+      "user",
+      newAdminId,
+      {
+        email: emailNormalized,
+        first_name: payload.first_name,
+        last_name: payload.last_name,
+        provisioned_by: actorAdminId
+      },
+      ip,
+      userAgent
+    );
+    return {
+      id: newAdminId,
+      email: emailNormalized,
+      first_name: payload.first_name,
+      last_name: payload.last_name,
+      role: "admin",
+      status: "active",
+      created_at: now
+    };
+  }
+  /**
+   * Activate or deactivate staff admin status
+   */
+  static async setStaffAdminStatus(actorAdminId, targetAdminId, status, reason, ip, userAgent) {
+    if (actorAdminId === targetAdminId && status === "suspended") {
+      throw new Error("Administrators cannot deactivate their own account.");
+    }
+    const pool2 = getPool();
+    let prevStatus = "unknown";
+    if (pool2) {
+      const rows = await query(
+        `SELECT id, email, status FROM users WHERE id = $1 AND LOWER(role) = 'admin'`,
+        [targetAdminId]
+      );
+      if (rows.length === 0) {
+        throw new Error("Staff administrator account not found");
+      }
+      prevStatus = rows[0].status;
+      if (status === "suspended") {
+        const activeCountRows = await query(
+          `SELECT COUNT(*)::int as count FROM users WHERE LOWER(role) = 'admin' AND status = 'active'`
+        );
+        const count = activeCountRows[0]?.count || 0;
+        if (count <= 1 && prevStatus === "active") {
+          throw new Error("Cannot deactivate the sole remaining active administrator");
+        }
+      }
+      await query(`UPDATE users SET status = $1, updated_at = NOW() WHERE id = $2 AND LOWER(role) = 'admin'`, [
+        status,
+        targetAdminId
+      ]);
+    } else {
+      const target = Array.from(inMemoryDb.users.values()).find(
+        (u) => u.id === targetAdminId && (u.role || "").toLowerCase() === "admin"
+      );
+      if (!target) {
+        throw new Error("Staff administrator account not found");
+      }
+      prevStatus = target.status;
+      if (status === "suspended") {
+        const activeCount = Array.from(inMemoryDb.users.values()).filter(
+          (u) => (u.role || "").toLowerCase() === "admin" && u.status === "active"
+        ).length;
+        if (activeCount <= 1 && prevStatus === "active") {
+          throw new Error("Cannot deactivate the sole remaining active administrator");
+        }
+      }
+      target.status = status;
+      target.updated_at = /* @__PURE__ */ new Date();
+    }
+    await this.recordAuditLog(
+      actorAdminId,
+      status === "suspended" ? "STAFF_ADMIN_DEACTIVATED" : "STAFF_ADMIN_ACTIVATED",
+      "user",
+      targetAdminId,
+      {
+        previous_status: prevStatus,
+        new_status: status,
+        reason: reason || "Administrative governance decision",
+        performed_by: actorAdminId
+      },
+      ip,
+      userAgent
+    );
+    return {
+      success: true,
+      targetAdminId,
+      status,
+      previousStatus: prevStatus
+    };
+  }
+};
+
+// netlify/functions/services/financial.service.ts
+import crypto11 from "crypto";
 
 // netlify/functions/services/financial-math.ts
 decimal_default.set({
@@ -78173,6 +78501,19 @@ var FinancialService = class {
     const timestamp = Date.now().toString(36).toUpperCase().slice(-4);
     return `${prefix}-${timestamp}-${randomHex}`;
   }
+  static sanitizeAuditDetails(obj) {
+    if (!obj || typeof obj !== "object") return obj;
+    const cloned = Array.isArray(obj) ? [...obj] : { ...obj };
+    const sensitiveKeys = ["secret", "signature", "token", "password", "key", "auth", "authorization", "crm_m2m_secret", "jwt"];
+    for (const k5 of Object.keys(cloned)) {
+      if (sensitiveKeys.some((s2) => k5.toLowerCase().includes(s2))) {
+        cloned[k5] = "[REDACTED]";
+      } else if (typeof cloned[k5] === "object" && cloned[k5] !== null) {
+        cloned[k5] = this.sanitizeAuditDetails(cloned[k5]);
+      }
+    }
+    return cloned;
+  }
   /**
    * Records a security / administrative audit log entry
    */
@@ -78182,11 +78523,12 @@ var FinancialService = class {
     const auditId = crypto11.randomUUID();
     const sanitizedIp = ip ? String(ip).split(",")[0].trim().substring(0, 100) : null;
     const sanitizedUserAgent = userAgent ? String(userAgent).substring(0, 500) : null;
+    const sanitizedDetails = this.sanitizeAuditDetails(details);
     if (pool2) {
       await query(
         `INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, ip_address, user_agent, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [auditId, actorId, action, targetType, targetId, JSON.stringify(details), sanitizedIp, sanitizedUserAgent, now]
+        [auditId, actorId, action, targetType, targetId, JSON.stringify(sanitizedDetails), sanitizedIp, sanitizedUserAgent, now]
       );
     } else {
       const record2 = {
@@ -78195,7 +78537,7 @@ var FinancialService = class {
         action,
         entity_type: targetType,
         entity_id: targetId,
-        details,
+        details: sanitizedDetails,
         ip_address: sanitizedIp,
         user_agent: sanitizedUserAgent,
         created_at: now
@@ -78689,53 +79031,74 @@ var FinancialService = class {
       created_at: now
     };
     if (pool2) {
-      await query(
-        `INSERT INTO withdrawals (id, reference_no, user_id, wallet_id, payment_method_id, payment_method_name, amount, currency, status, payout_details, client_notes, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-        [
-          withdrawalRecord.id,
-          withdrawalRecord.reference_no,
-          withdrawalRecord.user_id,
-          withdrawalRecord.wallet_id,
-          withdrawalRecord.payment_method_id,
-          withdrawalRecord.payment_method_name,
-          withdrawalRecord.amount,
-          withdrawalRecord.currency,
-          withdrawalRecord.status,
-          JSON.stringify(withdrawalRecord.payout_details),
-          withdrawalRecord.client_notes,
-          withdrawalRecord.created_at,
-          withdrawalRecord.updated_at
-        ]
-      );
-      await query(
-        `UPDATE wallets
-         SET reserved_balance = $1, updated_at = $2
-         WHERE id = $3`,
-        [reservedAfterStr, now, wallet.id]
-      );
-      await query(
-        `INSERT INTO transactions (id, transaction_no, user_id, wallet_id, type, amount, currency, balance_before, balance_after, reserved_before, reserved_after, status, reference_type, reference_id, description, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
-        [
-          transactionRecord.id,
-          transactionRecord.transaction_no,
-          transactionRecord.user_id,
-          transactionRecord.wallet_id,
-          transactionRecord.type,
-          transactionRecord.amount,
-          transactionRecord.currency,
-          transactionRecord.balance_before,
-          transactionRecord.balance_after,
-          transactionRecord.reserved_before,
-          transactionRecord.reserved_after,
-          transactionRecord.status,
-          transactionRecord.reference_type,
-          transactionRecord.reference_id,
-          transactionRecord.description,
-          transactionRecord.created_at
-        ]
-      );
+      const client = await pool2.connect();
+      try {
+        await client.query("BEGIN");
+        const lockWallet = await client.query(
+          "SELECT balance, reserved_balance FROM wallets WHERE id = $1 FOR UPDATE",
+          [wallet.id]
+        );
+        if (lockWallet.rows.length === 0) throw new Error("Wallet not found");
+        const liveBal = toDecimal(lockWallet.rows[0].balance);
+        const liveRes = toDecimal(lockWallet.rows[0].reserved_balance);
+        if (liveBal.minus(liveRes).lessThan(withdrawalAmount)) {
+          throw new Error(`Insufficient wallet available balance. Available: $${formatMoney(liveBal.minus(liveRes))}`);
+        }
+        const updatedReservedStr = formatMoney(liveRes.plus(withdrawalAmount));
+        await client.query(
+          `INSERT INTO withdrawals (id, reference_no, user_id, wallet_id, payment_method_id, payment_method_name, amount, currency, status, payout_details, client_notes, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+          [
+            withdrawalRecord.id,
+            withdrawalRecord.reference_no,
+            withdrawalRecord.user_id,
+            withdrawalRecord.wallet_id,
+            withdrawalRecord.payment_method_id,
+            withdrawalRecord.payment_method_name,
+            withdrawalRecord.amount,
+            withdrawalRecord.currency,
+            withdrawalRecord.status,
+            JSON.stringify(withdrawalRecord.payout_details),
+            withdrawalRecord.client_notes,
+            withdrawalRecord.created_at,
+            withdrawalRecord.updated_at
+          ]
+        );
+        await client.query(
+          `UPDATE wallets
+           SET reserved_balance = $1, updated_at = $2
+           WHERE id = $3`,
+          [updatedReservedStr, now, wallet.id]
+        );
+        await client.query(
+          `INSERT INTO transactions (id, transaction_no, user_id, wallet_id, type, amount, currency, balance_before, balance_after, reserved_before, reserved_after, status, reference_type, reference_id, description, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+          [
+            transactionRecord.id,
+            transactionRecord.transaction_no,
+            transactionRecord.user_id,
+            transactionRecord.wallet_id,
+            transactionRecord.type,
+            transactionRecord.amount,
+            transactionRecord.currency,
+            formatMoney(liveBal),
+            formatMoney(liveBal),
+            formatMoney(liveRes),
+            updatedReservedStr,
+            transactionRecord.status,
+            transactionRecord.reference_type,
+            transactionRecord.reference_id,
+            transactionRecord.description,
+            transactionRecord.created_at
+          ]
+        );
+        await client.query("COMMIT");
+      } catch (dbErr) {
+        await client.query("ROLLBACK");
+        throw dbErr;
+      } finally {
+        client.release();
+      }
     } else {
       inMemoryDb.withdrawals.set(withdrawalRecord.id, withdrawalRecord);
       wallet.reserved_balance = reservedAfterStr;
@@ -102389,7 +102752,8 @@ var AdminUpdateTradingAccountMetadataSchema = external_exports.object({
   nickname: external_exports.string().max(100).optional().nullable()
 });
 var AdminProvisionTradingAccountSchema = external_exports.object({
-  user_id: external_exports.string().min(1, "User ID is required"),
+  user_id: external_exports.string().optional().nullable(),
+  ownership_type: external_exports.enum(["client_linked", "standalone"]).optional().default("client_linked"),
   platform: external_exports.enum(["MT4", "MT5", "cTrader", "WebTrader"]).default("MT5"),
   account_type: external_exports.enum(["standard", "raw_spread", "pro", "islamic"]).default("standard"),
   currency: external_exports.string().trim().min(3).max(10).default("USD"),

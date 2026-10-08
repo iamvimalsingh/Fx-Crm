@@ -1,5 +1,5 @@
 import jwt from 'jsonwebtoken';
-import { UserRecord, inMemoryDb, getPool, query } from '../db/client';
+import { UserRecord, inMemoryDb, getPool, query, DatabaseGuard } from '../db/client';
 
 export class JwtConfigurationError extends Error {
   constructor(message: string = 'JWT_SECRET is not configured. Authentication cannot proceed.') {
@@ -24,11 +24,7 @@ const TRADING_LAUNCH_TOKEN_EXPIRES_IN = '5m';
  */
 export function getJwtSecret(): string {
   const rawSecret = process.env.JWT_SECRET;
-  const isProd =
-    process.env.NODE_ENV === 'production' ||
-    process.env.APP_ENV === 'production' ||
-    process.env.NETLIFY === 'true' ||
-    process.env.CONTEXT === 'production';
+  const isProd = DatabaseGuard.isProduction();
 
   if (!rawSecret || rawSecret.trim() === '') {
     if (isProd) {
@@ -59,11 +55,7 @@ export function getJwtSecret(): string {
  */
 export function getCrmLaunchSecret(): string {
   const rawSecret = process.env.CRM_LAUNCH_SECRET;
-  const isProd =
-    process.env.NODE_ENV === 'production' ||
-    process.env.APP_ENV === 'production' ||
-    process.env.NETLIFY === 'true' ||
-    process.env.CONTEXT === 'production';
+  const isProd = DatabaseGuard.isProduction();
 
   if (!rawSecret || rawSecret.trim() === '') {
     if (isProd) {
@@ -91,6 +83,32 @@ export interface TokenPayload {
   userId: string;
   email: string;
   role: 'client' | 'admin';
+  permissions?: string[];
+}
+
+export type AdminPermission =
+  | 'FINANCE'
+  | 'TRADING_MANAGER'
+  | 'COMPLIANCE'
+  | 'SUPPORT'
+  | 'CLIENT_MANAGEMENT'
+  | 'SYSTEM_ADMIN'
+  | 'READ_ONLY';
+
+/**
+ * Validates whether an authenticated actor has the required administrative permission.
+ * Fully backward-compatible: any user with role 'admin' has all standard administrative permissions.
+ */
+export function hasAdminPermission(
+  user: { role?: string; permissions?: string[] } | TokenPayload | null | undefined,
+  permission: AdminPermission
+): boolean {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  if (Array.isArray(user.permissions) && (user.permissions.includes(permission) || user.permissions.includes('SYSTEM_ADMIN'))) {
+    return true;
+  }
+  return false;
 }
 
 export interface TradingLaunchTokenPayload {

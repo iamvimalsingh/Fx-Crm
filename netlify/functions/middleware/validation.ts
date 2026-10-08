@@ -258,7 +258,8 @@ export const AdminUpdateTradingAccountMetadataSchema = z.object({
 });
 
 export const AdminProvisionTradingAccountSchema = z.object({
-  user_id: z.string().min(1, 'User ID is required'),
+  user_id: z.string().optional().nullable(),
+  ownership_type: z.enum(['client_linked', 'standalone']).optional().default('client_linked'),
   platform: z.enum(['MT4', 'MT5', 'cTrader', 'WebTrader']).default('MT5'),
   account_type: z.enum(['standard', 'raw_spread', 'pro', 'islamic']).default('standard'),
   currency: z.string().trim().min(3).max(10).default('USD'),

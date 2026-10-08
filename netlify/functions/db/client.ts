@@ -140,13 +140,18 @@ export interface TransactionRecord {
 export interface TradingAccountRecord {
   id: string;
   account_number: string;
-  user_id: string;
+  user_id: string | null;
+  ownership_type?: 'client_linked' | 'standalone';
   platform: string;
   account_type: 'standard' | 'raw_spread' | 'pro' | 'islamic';
   server_name: string;
   currency: string;
   leverage: string;
-  status: 'pending_approval' | 'active' | 'read_only' | 'disabled' | 'archived';
+  status: 'pending_approval' | 'active' | 'read_only' | 'disabled' | 'archived' | 'REQUESTED' | 'UNDER_REVIEW' | 'APPROVED' | 'PROVISIONING' | 'ACTIVE' | 'READ_ONLY' | 'SUSPENDED' | 'DISABLED' | 'CLOSED' | 'ARCHIVED';
+  trading_enabled?: boolean;
+  provisioning_status?: 'unprovisioned' | 'provisioning' | 'provisioned' | 'failed';
+  provisioning_error?: string | null;
+  provisioned_at?: Date | null;
   nickname?: string | null;
   is_demo: boolean;
   group_tier?: string | null;

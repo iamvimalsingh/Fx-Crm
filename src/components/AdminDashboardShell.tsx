@@ -10,6 +10,7 @@ import { AdminClientDirectoryView } from './admin/AdminClientDirectoryView';
 import { AdminNotificationsView } from './admin/AdminNotificationsView';
 import { AdminBrokerSettingsView } from './admin/AdminBrokerSettingsView';
 import { AdminStaffManagementView } from './admin/AdminStaffManagementView';
+import { AdminDealerControlPlaneView } from './admin/AdminDealerControlPlaneView';
 import { NotificationCenter } from './notifications/NotificationCenter';
 import {
   Shield,
@@ -32,6 +33,7 @@ import {
   Bell,
   UserCheck,
   AlertTriangle,
+  Activity,
 } from 'lucide-react';
 
 interface AdminViewErrorBoundaryProps {
@@ -105,6 +107,7 @@ export function AdminDashboardShell({
     | 'dashboard'
     | 'clients'
     | 'trading_accounts'
+    | 'dealer_control'
     | 'deposits'
     | 'withdrawals'
     | 'transfers'
@@ -243,6 +246,24 @@ export function AdminDashboardShell({
               }`}
             >
               <Layers className="w-4 h-4 text-indigo-400" /> Trading Accounts
+            </button>
+            <button
+              onClick={() => {
+                setAdminNav('dealer_control');
+                setMobileMenuOpen(false);
+              }}
+              className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition ${
+                adminNav === 'dealer_control'
+                  ? 'bg-purple-600 text-white font-semibold shadow'
+                  : 'text-slate-400 hover:bg-[#141a24] hover:text-slate-200'
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <Activity className="w-4 h-4 text-emerald-400" /> Dealer Control Plane
+              </div>
+              <span className="text-[9px] px-1.5 py-0.5 rounded font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 uppercase">
+                Live
+              </span>
             </button>
             <button
               onClick={() => {
@@ -427,6 +448,8 @@ export function AdminDashboardShell({
                   ? 'Client Directory'
                   : adminNav === 'trading_accounts'
                   ? 'Trading Accounts Registry'
+                  : adminNav === 'dealer_control'
+                  ? 'Manager & Dealer Control Plane'
                   : adminNav === 'deposits'
                   ? 'Deposit Verification Queue'
                   : adminNav === 'withdrawals'
@@ -460,6 +483,7 @@ export function AdminDashboardShell({
             )}
             {adminNav === 'clients' && <AdminClientDirectoryView />}
             {adminNav === 'trading_accounts' && <AdminTradingAccountsView />}
+            {adminNav === 'dealer_control' && <AdminDealerControlPlaneView />}
             {adminNav === 'deposits' && <AdminFinancialView initialTab="deposits" />}
             {adminNav === 'withdrawals' && <AdminFinancialView initialTab="withdrawals" />}
             {adminNav === 'transfers' && <AdminFinancialView initialTab="transfers" />}

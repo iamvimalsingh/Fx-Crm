@@ -2,6 +2,7 @@ import { Handler, HandlerEvent, HandlerContext } from '@netlify/functions';
 import { AuthService } from './services/auth.service';
 import { FinancialService } from './services/financial.service';
 import { TradingAccountService } from './services/trading-account.service';
+import { TradingEngineBridgeService } from './services/trading-engine-bridge.service';
 import { KycService } from './services/kyc.service';
 import { SupportService } from './services/support.service';
 import { NotificationService } from './services/notification.service';
@@ -94,6 +95,21 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
   }
   if (!path.startsWith('/')) {
     path = '/' + path;
+  }
+
+  // Strip query string from path and merge into queryStringParameters if present
+  if (path.includes('?')) {
+    const [cleanPath, qs] = path.split('?');
+    path = cleanPath;
+    if (qs) {
+      const parsedQs = new URLSearchParams(qs);
+      event.queryStringParameters = event.queryStringParameters || {};
+      parsedQs.forEach((val, key) => {
+        if (!event.queryStringParameters![key]) {
+          event.queryStringParameters![key] = val;
+        }
+      });
+    }
   }
 
   // Extract client IP and user agent for audit logging
@@ -1080,7 +1096,8 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
     const isTradingAccountRoute =
       path.startsWith('/trading-accounts') ||
       path.startsWith('/admin/trading-accounts') ||
-      path.startsWith('/admin/trading-password-resets');
+      path.startsWith('/admin/trading-password-resets') ||
+      path.startsWith('/admin/trading-control');
 
     if (isTradingAccountRoute) {
       if (!authUser) {
@@ -1093,7 +1110,9 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
 
       // Admin routes role authorization guard
       if (
-        (path.startsWith('/admin/trading-accounts') || path.startsWith('/admin/trading-password-resets')) &&
+        (path.startsWith('/admin/trading-accounts') ||
+          path.startsWith('/admin/trading-password-resets') ||
+          path.startsWith('/admin/trading-control')) &&
         authUser.role !== 'admin'
       ) {
         return {
@@ -1587,6 +1606,424 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: 'success', ...result }),
         };
+      }
+
+      // =======================================================================
+      // DEALER & MANAGER CONTROL PLANE ROUTES (Phase 2 Broker Operations)
+      // =======================================================================
+
+      // Admin: GET /api/admin/trading-control/overview (Dealer operations overview & engine health)
+      if (path === '/admin/trading-control/overview' && event.httpMethod === 'GET') {
+        try {
+          const [health, positions, orders, instruments] = await Promise.all([
+            TradingEngineBridgeService.checkHealth().catch(() => ({ status: 'offline' })),
+            TradingEngineBridgeService.getPositions().catch(() => []),
+            TradingEngineBridgeService.getOrders().catch(() => []),
+            TradingEngineBridgeService.getInstruments().catch(() => []),
+          ]);
+
+          const openPositions = Array.isArray(positions) ? positions.filter((p: any) => p.status === 'OPEN') : [];
+          const activeOrders = Array.isArray(orders) ? orders.filter((o: any) => o.status === 'PENDING' || o.status === 'WORKING') : [];
+          const haltedInstruments = Array.isArray(instruments) ? instruments.filter((i: any) => i.tradingStatus !== 'TRADING') : [];
+
+          return {
+            statusCode: 200,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              status: 'success',
+              data: {
+                engineHealth: health,
+                metrics: {
+                  openPositionsCount: openPositions.length,
+                  workingOrdersCount: activeOrders.length,
+                  instrumentsCount: Array.isArray(instruments) ? instruments.length : 0,
+                  haltedInstrumentsCount: haltedInstruments.length,
+                  totalVolumeLots: openPositions.reduce((sum: number, p: any) => sum + (Number(p.volume) || Number(p.lots) || 0), 0),
+                  totalUnrealizedPnL: openPositions.reduce((sum: number, p: any) => sum + (Number(p.unrealizedPnL) || 0), 0),
+                },
+                timestamp: Date.now(),
+              },
+            }),
+          };
+        } catch (err: any) {
+          return {
+            statusCode: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'error', message: err.message || 'Failed to fetch dealer overview' }),
+          };
+        }
+      }
+
+      // Admin: GET /api/admin/trading-control/accounts/:id/runtime (Authoritative account runtime & risk)
+      const accountRuntimeMatch = path.match(/^\/admin\/trading-control\/accounts\/([^/]+)\/runtime$/);
+      if (accountRuntimeMatch && event.httpMethod === 'GET') {
+        const accountId = accountRuntimeMatch[1];
+        try {
+          const [runtimeState, riskState] = await Promise.all([
+            TradingEngineBridgeService.getAccountRuntime(accountId),
+            TradingEngineBridgeService.getAccountRisk(accountId),
+          ]);
+          return {
+            statusCode: 200,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              status: 'success',
+              data: {
+                runtime: runtimeState,
+                risk: riskState,
+              },
+            }),
+          };
+        } catch (err: any) {
+          return {
+            statusCode: err.statusCode || 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'error', message: err.message || 'Failed to query account runtime state' }),
+          };
+        }
+      }
+
+      // Admin: POST /api/admin/trading-control/accounts/:id/operational-status (Emergency status / trading rights)
+      const accountOperationalStatusMatch = path.match(/^\/admin\/trading-control\/accounts\/([^/]+)\/operational-status$/);
+      if (accountOperationalStatusMatch && event.httpMethod === 'POST') {
+        const accountId = accountOperationalStatusMatch[1];
+        const body = parseRequestBody(event.body);
+        if (!body.status || !['ACTIVE', 'SUSPENDED', 'READ_ONLY'].includes(body.status)) {
+          return {
+            statusCode: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'error', message: 'Status must be ACTIVE, SUSPENDED, or READ_ONLY' }),
+          };
+        }
+        if (typeof body.tradingEnabled !== 'boolean') {
+          return {
+            statusCode: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'error', message: 'tradingEnabled boolean is required' }),
+          };
+        }
+
+        try {
+          const result = await TradingEngineBridgeService.updateAccountStatus({
+            accountId,
+            status: body.status,
+            tradingEnabled: body.tradingEnabled,
+            reason: body.reason || 'Admin operational status change',
+            adminUserId: authUser.id,
+          });
+
+          await TradingAccountService.recordAuditLog(
+            authUser.id,
+            'OPERATIONAL_STATUS_CHANGED',
+            accountId,
+            {
+              status: body.status,
+              tradingEnabled: body.tradingEnabled,
+              reason: body.reason || 'Admin operational status change',
+            },
+            clientIp,
+            userAgent
+          );
+
+          return {
+            statusCode: 200,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'success', data: result, message: 'Account operational status updated on Trading Engine.' }),
+          };
+        } catch (err: any) {
+          return {
+            statusCode: err.statusCode || 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'error', message: err.message || 'Failed to update account operational status' }),
+          };
+        }
+      }
+
+      // Admin: GET /api/admin/trading-control/positions (Query open positions across engine or by account)
+      if (path === '/admin/trading-control/positions' && event.httpMethod === 'GET') {
+        const accountId = event.queryStringParameters?.accountId;
+        try {
+          const positions = await TradingEngineBridgeService.getPositions(accountId);
+          return {
+            statusCode: 200,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'success', data: positions }),
+          };
+        } catch (err: any) {
+          return {
+            statusCode: err.statusCode || 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'error', message: err.message || 'Failed to query positions from Trading Engine' }),
+          };
+        }
+      }
+
+      // Admin: POST /api/admin/trading-control/positions/:id/close (Dealer emergency position close)
+      const closePositionMatch = path.match(/^\/admin\/trading-control\/positions\/([^/]+)\/close$/);
+      if (closePositionMatch && event.httpMethod === 'POST') {
+        const positionId = closePositionMatch[1];
+        const body = parseRequestBody(event.body);
+        try {
+          const result = await TradingEngineBridgeService.closePosition({
+            positionId,
+            adminUserId: authUser.id,
+            reason: body.reason || 'Dealer manual close via CRM Control Plane',
+          });
+
+          await TradingAccountService.recordAuditLog(
+            authUser.id,
+            'POSITION_CLOSED_BY_DEALER',
+            positionId,
+            {
+              position_id: positionId,
+              reason: body.reason || 'Dealer manual close via CRM Control Plane',
+              result,
+            },
+            clientIp,
+            userAgent
+          );
+
+          return {
+            statusCode: 200,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'success', data: result, message: 'Position closed authoritatively on Trading Engine.' }),
+          };
+        } catch (err: any) {
+          return {
+            statusCode: err.statusCode || 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'error', message: err.message || 'Failed to close position on Trading Engine' }),
+          };
+        }
+      }
+
+      // Admin: POST /api/admin/trading-control/accounts/:id/close-all-positions (Emergency liquidation/close-all)
+      const closeAllPositionsMatch = path.match(/^\/admin\/trading-control\/accounts\/([^/]+)\/close-all-positions$/);
+      if (closeAllPositionsMatch && event.httpMethod === 'POST') {
+        const accountId = closeAllPositionsMatch[1];
+        const body = parseRequestBody(event.body);
+        try {
+          const result = await TradingEngineBridgeService.closeAllPositions({
+            accountId,
+            adminUserId: authUser.id,
+            reason: body.reason || 'Emergency close-all by Dealer via CRM Control Plane',
+          });
+
+          await TradingAccountService.recordAuditLog(
+            authUser.id,
+            'ALL_POSITIONS_CLOSED_BY_DEALER',
+            accountId,
+            {
+              account_id: accountId,
+              reason: body.reason || 'Emergency close-all by Dealer via CRM Control Plane',
+              result,
+            },
+            clientIp,
+            userAgent
+          );
+
+          return {
+            statusCode: 200,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'success', data: result, message: 'All positions closed authoritatively on Trading Engine.' }),
+          };
+        } catch (err: any) {
+          return {
+            statusCode: err.statusCode || 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'error', message: err.message || 'Failed to close all positions on Trading Engine' }),
+          };
+        }
+      }
+
+      // Admin: GET /api/admin/trading-control/orders (Query working orders across engine or by account)
+      if (path === '/admin/trading-control/orders' && event.httpMethod === 'GET') {
+        const accountId = event.queryStringParameters?.accountId;
+        try {
+          const orders = await TradingEngineBridgeService.getOrders(accountId);
+          return {
+            statusCode: 200,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'success', data: orders }),
+          };
+        } catch (err: any) {
+          return {
+            statusCode: err.statusCode || 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'error', message: err.message || 'Failed to query orders from Trading Engine' }),
+          };
+        }
+      }
+
+      // Admin: POST /api/admin/trading-control/orders/:id/cancel (Dealer cancel working order)
+      const cancelOrderMatch = path.match(/^\/admin\/trading-control\/orders\/([^/]+)\/cancel$/);
+      if (cancelOrderMatch && event.httpMethod === 'POST') {
+        const orderId = cancelOrderMatch[1];
+        const body = parseRequestBody(event.body);
+        try {
+          const result = await TradingEngineBridgeService.cancelOrder({
+            orderId,
+            adminUserId: authUser.id,
+            reason: body.reason || 'Dealer cancelled order via CRM Control Plane',
+          });
+
+          await TradingAccountService.recordAuditLog(
+            authUser.id,
+            'ORDER_CANCELLED_BY_DEALER',
+            orderId,
+            {
+              order_id: orderId,
+              reason: body.reason || 'Dealer cancelled order via CRM Control Plane',
+              result,
+            },
+            clientIp,
+            userAgent
+          );
+
+          return {
+            statusCode: 200,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'success', data: result, message: 'Order cancelled authoritatively on Trading Engine.' }),
+          };
+        } catch (err: any) {
+          return {
+            statusCode: err.statusCode || 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'error', message: err.message || 'Failed to cancel order on Trading Engine' }),
+          };
+        }
+      }
+
+      // Admin: POST /api/admin/trading-control/accounts/:id/cancel-all-orders (Dealer cancel all working orders)
+      const cancelAllOrdersMatch = path.match(/^\/admin\/trading-control\/accounts\/([^/]+)\/cancel-all-orders$/);
+      if (cancelAllOrdersMatch && event.httpMethod === 'POST') {
+        const accountId = cancelAllOrdersMatch[1];
+        const body = parseRequestBody(event.body);
+        try {
+          const result = await TradingEngineBridgeService.cancelAllOrders({
+            accountId,
+            adminUserId: authUser.id,
+            reason: body.reason || 'Dealer cancelled all orders via CRM Control Plane',
+          });
+
+          await TradingAccountService.recordAuditLog(
+            authUser.id,
+            'ALL_ORDERS_CANCELLED_BY_DEALER',
+            accountId,
+            {
+              account_id: accountId,
+              reason: body.reason || 'Dealer cancelled all orders via CRM Control Plane',
+              result,
+            },
+            clientIp,
+            userAgent
+          );
+
+          return {
+            statusCode: 200,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'success', data: result, message: 'All orders cancelled authoritatively on Trading Engine.' }),
+          };
+        } catch (err: any) {
+          return {
+            statusCode: err.statusCode || 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'error', message: err.message || 'Failed to cancel all orders on Trading Engine' }),
+          };
+        }
+      }
+
+      // Admin: GET /api/admin/trading-control/executions (Trade blotter / executions journal)
+      if (path === '/admin/trading-control/executions' && event.httpMethod === 'GET') {
+        const filters = {
+          accountId: event.queryStringParameters?.accountId,
+          orderId: event.queryStringParameters?.orderId,
+          positionId: event.queryStringParameters?.positionId,
+          symbol: event.queryStringParameters?.symbol,
+          tenantId: event.queryStringParameters?.tenantId,
+          limit: event.queryStringParameters?.limit ? parseInt(event.queryStringParameters.limit, 10) : 50,
+          offset: event.queryStringParameters?.offset ? parseInt(event.queryStringParameters.offset, 10) : 0,
+        };
+        try {
+          const blotter = await TradingEngineBridgeService.getExecutions(filters);
+          return {
+            statusCode: 200,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'success', data: blotter }),
+          };
+        } catch (err: any) {
+          return {
+            statusCode: err.statusCode || 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'error', message: err.message || 'Failed to query executions from Trading Engine' }),
+          };
+        }
+      }
+
+      // Admin: GET /api/admin/trading-control/instruments (Instrument catalog & trading status)
+      if (path === '/admin/trading-control/instruments' && event.httpMethod === 'GET') {
+        try {
+          const instruments = await TradingEngineBridgeService.getInstruments();
+          return {
+            statusCode: 200,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'success', data: instruments }),
+          };
+        } catch (err: any) {
+          return {
+            statusCode: err.statusCode || 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'error', message: err.message || 'Failed to query instruments from Trading Engine' }),
+          };
+        }
+      }
+
+      // Admin: POST /api/admin/trading-control/instruments/:symbol/status (Market surveillance circuit breaker)
+      const instrumentStatusMatch = path.match(/^\/admin\/trading-control\/instruments\/([^/]+)\/status$/);
+      if (instrumentStatusMatch && event.httpMethod === 'POST') {
+        const symbol = instrumentStatusMatch[1].toUpperCase();
+        const body = parseRequestBody(event.body);
+        if (!body.status || !['TRADING', 'HALTED', 'CLOSE_ONLY'].includes(body.status)) {
+          return {
+            statusCode: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'error', message: 'Status must be TRADING, HALTED, or CLOSE_ONLY' }),
+          };
+        }
+
+        try {
+          const result = await TradingEngineBridgeService.setInstrumentStatus({
+            symbol,
+            status: body.status,
+            reason: body.reason || 'Surveillance status update via CRM Control Plane',
+            adminUserId: authUser.id,
+          });
+
+          await TradingAccountService.recordAuditLog(
+            authUser.id,
+            'INSTRUMENT_STATUS_CHANGED',
+            symbol,
+            {
+              symbol,
+              status: body.status,
+              reason: body.reason || 'Surveillance status update via CRM Control Plane',
+            },
+            clientIp,
+            userAgent
+          );
+
+          return {
+            statusCode: 200,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'success', data: result, message: `Instrument ${symbol} status set to ${body.status}.` }),
+          };
+        } catch (err: any) {
+          return {
+            statusCode: err.statusCode || 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'error', message: err.message || 'Failed to update instrument status on Trading Engine' }),
+          };
+        }
       }
     }
 

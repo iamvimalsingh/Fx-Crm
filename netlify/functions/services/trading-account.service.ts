@@ -9,6 +9,7 @@ import {
   TradingPasswordResetRecord,
 } from '../db/client';
 import { NotificationService } from './notification.service';
+import { TradingEngineBridgeService } from './trading-engine-bridge.service';
 import {
   RegisterTradingAccountInput,
   LinkTradingAccountInput,
@@ -31,6 +32,20 @@ export interface TradingAccountWithOwner extends TradingAccountRecord {
 }
 
 export class TradingAccountService {
+  private static sanitizeAuditDetails(obj: any): any {
+    if (!obj || typeof obj !== 'object') return obj;
+    const cloned = Array.isArray(obj) ? [...obj] : { ...obj };
+    const sensitiveKeys = ['secret', 'signature', 'token', 'password', 'key', 'auth', 'authorization', 'crm_m2m_secret', 'jwt'];
+    for (const k of Object.keys(cloned)) {
+      if (sensitiveKeys.some((s) => k.toLowerCase().includes(s))) {
+        cloned[k] = '[REDACTED]';
+      } else if (typeof cloned[k] === 'object' && cloned[k] !== null) {
+        cloned[k] = this.sanitizeAuditDetails(cloned[k]);
+      }
+    }
+    return cloned;
+  }
+
   /**
    * Records an audit log entry for trading account events
    */
@@ -47,12 +62,13 @@ export class TradingAccountService {
     const auditId = crypto.randomUUID();
     const sanitizedIp = ip ? String(ip).split(',')[0].trim().substring(0, 100) : null;
     const sanitizedUserAgent = userAgent ? String(userAgent).substring(0, 500) : null;
+    const sanitizedDetails = this.sanitizeAuditDetails(details);
 
     if (pool) {
       await query(
         `INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details, ip_address, user_agent, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [auditId, actorId, action, 'trading_account', targetId, JSON.stringify(details), sanitizedIp, sanitizedUserAgent, now]
+        [auditId, actorId, action, 'trading_account', targetId, JSON.stringify(sanitizedDetails), sanitizedIp, sanitizedUserAgent, now]
       );
     } else {
       const record: AuditLogRecord = {
@@ -61,7 +77,7 @@ export class TradingAccountService {
         action,
         entity_type: 'trading_account',
         entity_id: targetId,
-        details,
+        details: sanitizedDetails,
         ip_address: sanitizedIp,
         user_agent: sanitizedUserAgent,
         created_at: now,
@@ -123,6 +139,11 @@ export class TradingAccountService {
     let externalAccountId = row.external_account_id || null;
     let tenantId = row.tenant_id || 'default';
 
+    let ownershipType: 'client_linked' | 'standalone' = row.user_id ? 'client_linked' : 'standalone';
+    let provisioningStatus: 'unprovisioned' | 'provisioning' | 'provisioned' | 'failed' = row.status === 'active' ? 'provisioned' : 'unprovisioned';
+    let provisioningError: string | null = null;
+    let tradingEnabled = row.status !== 'disabled' && row.status !== 'archived';
+
     if (row.investor_notes && typeof row.investor_notes === 'string' && row.investor_notes.startsWith('{')) {
       try {
         const meta = JSON.parse(row.investor_notes);
@@ -131,11 +152,20 @@ export class TradingAccountService {
         if (meta.terminal_url !== undefined) terminalUrl = meta.terminal_url;
         if (meta.external_account_id !== undefined) externalAccountId = meta.external_account_id;
         if (meta.tenant_id !== undefined) tenantId = meta.tenant_id;
+        if (meta.ownership_type !== undefined) ownershipType = meta.ownership_type;
+        if (meta.provisioning_status !== undefined) provisioningStatus = meta.provisioning_status;
+        if (meta.provisioning_error !== undefined) provisioningError = meta.provisioning_error;
+        if (meta.trading_enabled !== undefined) tradingEnabled = meta.trading_enabled;
         if (meta.notes !== undefined) cleanInvestorNotes = meta.notes;
       } catch {
         // Leave unparsed if not JSON
       }
     }
+
+    if (row.provisioning_status) provisioningStatus = row.provisioning_status;
+    if (row.ownership_type) ownershipType = row.ownership_type;
+    if (row.provisioning_error !== undefined) provisioningError = row.provisioning_error;
+    if (row.trading_enabled !== undefined) tradingEnabled = row.trading_enabled;
 
     if (isDemo) {
       if (!demoBalance || demoBalance === '0' || demoBalance === '0.00') {
@@ -152,13 +182,17 @@ export class TradingAccountService {
     return {
       id: row.id,
       account_number: String(row.account_number),
-      user_id: row.user_id,
+      user_id: row.user_id || null,
+      ownership_type: ownershipType,
       platform: row.platform,
       account_type: row.account_type,
       server_name: row.server_name,
       currency: row.currency,
       leverage: row.leverage,
       status: row.status,
+      trading_enabled: tradingEnabled,
+      provisioning_status: provisioningStatus,
+      provisioning_error: provisioningError,
       nickname: row.nickname || null,
       is_demo: isDemo,
       group_tier: row.group_tier || null,
@@ -202,6 +236,10 @@ export class TradingAccountService {
       password: record.password ?? record.demo_password ?? null,
       balance: record.balance ?? null,
       terminal_url: record.terminal_url ?? null,
+      ownership_type: record.ownership_type ?? (record.user_id ? 'client_linked' : 'standalone'),
+      provisioning_status: record.provisioning_status ?? 'provisioned',
+      provisioning_error: record.provisioning_error ?? null,
+      trading_enabled: record.trading_enabled ?? true,
       notes: record.notes ?? record.investor_notes ?? null,
       ...record,
     });
@@ -830,36 +868,65 @@ export class TradingAccountService {
     const updatedGroupTier = input.group_tier?.trim() || account.group_tier;
     const adminNotes = input.admin_notes?.trim() || account.admin_notes;
 
-    const pool = getPool();
-    if (pool) {
-      await query(
-        `UPDATE trading_accounts 
-         SET status = 'active', account_number = $1, server_name = $2, group_tier = $3, admin_notes = $4, approved_at = $5, approved_by = $6, updated_at = $5
-         WHERE id = $7`,
-        [updatedAccountNumber, updatedServer, updatedGroupTier, adminNotes, now, adminId, accountId]
-      );
-    } else {
-      const record = inMemoryDb.tradingAccounts.get(accountId);
-      if (record) {
-        record.status = 'active';
-        record.account_number = updatedAccountNumber;
-        record.server_name = updatedServer;
-        record.group_tier = updatedGroupTier;
-        record.admin_notes = adminNotes;
-        record.approved_at = now;
-        record.approved_by = adminId;
-        record.updated_at = now;
-      }
+    // Remote Provisioning Sync to Trading Platform Engine
+    try {
+      const numLeverage = parseInt((account.leverage || '100').replace('1:', ''), 10) || 100;
+      await TradingEngineBridgeService.provisionTradingAccount({
+        accountId: account.id,
+        accountNumber: updatedAccountNumber,
+        currency: account.currency,
+        leverage: numLeverage,
+        accountType: account.account_type,
+        isDemo: account.is_demo,
+        initialBalance: parseFloat(account.balance || '0') || 0,
+        serverName: updatedServer,
+        tradingEnabled: true,
+        status: 'ACTIVE',
+        tenantId: 'default',
+        idempotencyKey: `prov-appr-${account.id}`,
+      });
+      account.provisioning_status = 'provisioned';
+      account.provisioned_at = now;
+      account.status = 'active';
+      account.trading_enabled = true;
+    } catch (err: any) {
+      account.provisioning_status = 'failed';
+      account.provisioning_error = err.message || 'Remote engine provisioning failed upon approval';
+      account.status = 'pending_approval';
+      account.trading_enabled = false;
     }
 
-    account.status = 'active';
     account.account_number = updatedAccountNumber;
     account.server_name = updatedServer;
     account.group_tier = updatedGroupTier;
     account.admin_notes = adminNotes;
-    account.approved_at = now;
-    account.approved_by = adminId;
+    account.approved_at = account.status === 'active' ? now : null;
+    account.approved_by = account.status === 'active' ? adminId : null;
     account.updated_at = now;
+
+    const pool = getPool();
+    if (pool) {
+      await query(
+        `UPDATE trading_accounts 
+         SET status = $1, account_number = $2, server_name = $3, group_tier = $4, admin_notes = $5, approved_at = $6, approved_by = $7, updated_at = $8
+         WHERE id = $9`,
+        [account.status, updatedAccountNumber, updatedServer, updatedGroupTier, adminNotes, account.approved_at, account.approved_by, now, accountId]
+      );
+    } else {
+      const record = inMemoryDb.tradingAccounts.get(accountId);
+      if (record) {
+        record.status = account.status;
+        record.provisioning_status = account.provisioning_status;
+        record.provisioning_error = account.provisioning_error;
+        record.account_number = updatedAccountNumber;
+        record.server_name = updatedServer;
+        record.group_tier = updatedGroupTier;
+        record.admin_notes = adminNotes;
+        record.approved_at = account.approved_at;
+        record.approved_by = account.approved_by;
+        record.updated_at = now;
+      }
+    }
 
     await this.recordAuditLog(
       adminId,
@@ -869,19 +936,23 @@ export class TradingAccountService {
         account_number: account.account_number,
         server_name: account.server_name,
         group_tier: account.group_tier,
+        provisioning_status: account.provisioning_status,
+        provisioning_error: account.provisioning_error || null,
         admin_notes: adminNotes,
       },
       ip,
       userAgent
     );
 
-    await NotificationService.createNotification(
-      account.user_id,
-      'Trading Account Approved',
-      `Your trading account #${account.account_number} (${account.platform}) is now active.`,
-      'trading_account',
-      { account_id: account.id, account_number: account.account_number, platform: account.platform }
-    );
+    if (account.user_id) {
+      await NotificationService.createNotification(
+        account.user_id,
+        'Trading Account Approved',
+        `Your trading account #${account.account_number} (${account.platform}) is now active.`,
+        'trading_account',
+        { account_id: account.id, account_number: account.account_number, platform: account.platform }
+      );
+    }
 
     return account;
   }
@@ -1160,32 +1231,36 @@ export class TradingAccountService {
     const pool = getPool();
     let targetUser: UserRecord | null = null;
 
-    if (pool) {
-      const userRows = await query<UserRecord>(`SELECT * FROM users WHERE id = $1`, [input.user_id]);
-      if (userRows.length === 0) {
-        const err: any = new Error('Target client user not found');
-        err.statusCode = 404;
-        throw err;
-      }
-      targetUser = userRows[0];
-    } else {
-      for (const u of inMemoryDb.users.values()) {
-        if (u.id === input.user_id) {
-          targetUser = u;
-          break;
+    const isStandalone = !input.user_id || input.ownership_type === 'standalone' || input.user_id.trim() === '';
+    
+    if (!isStandalone && input.user_id) {
+      if (pool) {
+        const userRows = await query<UserRecord>(`SELECT * FROM users WHERE id = $1`, [input.user_id]);
+        if (userRows.length === 0) {
+          const err: any = new Error('Target client user not found');
+          err.statusCode = 404;
+          throw err;
+        }
+        targetUser = userRows[0];
+      } else {
+        for (const u of inMemoryDb.users.values()) {
+          if (u.id === input.user_id) {
+            targetUser = u;
+            break;
+          }
+        }
+        if (!targetUser) {
+          const err: any = new Error('Target client user not found');
+          err.statusCode = 404;
+          throw err;
         }
       }
-      if (!targetUser) {
-        const err: any = new Error('Target client user not found');
-        err.statusCode = 404;
+
+      if (targetUser.role !== 'client') {
+        const err: any = new Error('Trading accounts can only be provisioned for client users');
+        err.statusCode = 400;
         throw err;
       }
-    }
-
-    if (targetUser.role !== 'client') {
-      const err: any = new Error('Trading accounts can only be provisioned for client users');
-      err.statusCode = 400;
-      throw err;
     }
 
     const now = new Date();
@@ -1205,13 +1280,16 @@ export class TradingAccountService {
     const newAccount: TradingAccountRecord = {
       id: accountId,
       account_number: accountNumber,
-      user_id: targetUser.id,
+      user_id: targetUser ? targetUser.id : null,
+      ownership_type: targetUser ? 'client_linked' : 'standalone',
       platform: input.platform,
       account_type: input.account_type,
       server_name: defaultServer,
       currency,
       leverage,
       status: 'active',
+      trading_enabled: true,
+      provisioning_status: 'provisioning',
       nickname,
       is_demo: input.is_demo,
       group_tier: groupTier,
@@ -1228,6 +1306,36 @@ export class TradingAccountService {
       balance: initialBalance,
       terminal_url: terminalUrl,
     };
+
+    // Remote Provisioning Sync to Trading Platform Engine
+    try {
+      const numLeverage = parseInt(leverage.replace('1:', ''), 10) || 100;
+      await TradingEngineBridgeService.provisionTradingAccount({
+        accountId: newAccount.id,
+        accountNumber: newAccount.account_number,
+        currency: newAccount.currency,
+        leverage: numLeverage,
+        accountType: newAccount.account_type,
+        isDemo: newAccount.is_demo,
+        initialBalance: parseFloat(initialBalance) || 0,
+        serverName: newAccount.server_name,
+        tradingEnabled: true,
+        status: 'ACTIVE',
+        tenantId: 'default',
+        idempotencyKey: `prov-${newAccount.id}`,
+      });
+      newAccount.provisioning_status = 'provisioned';
+      newAccount.provisioned_at = now;
+      newAccount.status = 'active';
+      newAccount.trading_enabled = true;
+    } catch (err: any) {
+      newAccount.provisioning_status = 'failed';
+      newAccount.provisioning_error = err.message || 'Remote engine provisioning failed';
+      newAccount.status = 'pending_approval';
+      newAccount.trading_enabled = false;
+      newAccount.approved_at = null;
+      newAccount.approved_by = null;
+    }
 
     if (pool) {
       const serializedNotes = this.serializeMetadata(newAccount);
@@ -1297,8 +1405,9 @@ export class TradingAccountService {
       {
         account_id: newAccount.id,
         account_number: newAccount.account_number,
-        user_id: targetUser.id,
-        user_email: targetUser.email,
+        ownership_type: newAccount.ownership_type,
+        user_id: targetUser ? targetUser.id : null,
+        user_email: targetUser ? targetUser.email : null,
         platform: newAccount.platform,
         account_type: newAccount.account_type,
         currency: newAccount.currency,
@@ -1306,6 +1415,8 @@ export class TradingAccountService {
         is_demo: newAccount.is_demo,
         server_name: newAccount.server_name,
         group_tier: newAccount.group_tier,
+        provisioning_status: newAccount.provisioning_status,
+        provisioning_error: newAccount.provisioning_error || null,
         external_account_id: newAccount.external_account_id,
         admin_notes: adminNotes,
       },
@@ -1313,13 +1424,15 @@ export class TradingAccountService {
       userAgent
     );
 
-    await NotificationService.createNotification(
-      targetUser.id,
-      'Trading Account Provisioned',
-      `An administrator has provisioned a new ${newAccount.is_demo ? 'Demo' : 'Live'} trading account #${newAccount.account_number} (${newAccount.platform}) for you.`,
-      'trading_account',
-      { account_id: newAccount.id, account_number: newAccount.account_number, platform: newAccount.platform }
-    );
+    if (targetUser) {
+      await NotificationService.createNotification(
+        targetUser.id,
+        'Trading Account Provisioned',
+        `An administrator has provisioned a new ${newAccount.is_demo ? 'Demo' : 'Live'} trading account #${newAccount.account_number} (${newAccount.platform}) for you.`,
+        'trading_account',
+        { account_id: newAccount.id, account_number: newAccount.account_number, platform: newAccount.platform }
+      );
+    }
 
     return newAccount;
   }

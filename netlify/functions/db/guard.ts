@@ -31,7 +31,9 @@ export class DatabaseGuard {
       process.env.NODE_ENV === 'production' ||
       process.env.APP_ENV === 'production' ||
       process.env.NETLIFY === 'true' ||
-      process.env.CONTEXT === 'production'
+      process.env.CONTEXT === 'production' ||
+      process.env.VERCEL === '1' ||
+      process.env.VERCEL_ENV === 'production'
     );
   }
 

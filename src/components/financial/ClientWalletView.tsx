@@ -1229,7 +1229,7 @@ export function ClientWalletView() {
                 <div className="flex items-center gap-2">
                   <ShieldAlert className="w-4 h-4 text-indigo-400" />
                   <span>
-                    Immutable double-entry balance trail. Every debit, credit, and reservation retains exact balance snapshots.
+                    Immutable wallet transaction ledger. Every debit, credit, and reservation retains exact balance snapshots.
                   </span>
                 </div>
                 <span className="font-mono text-[11px] text-indigo-300">
